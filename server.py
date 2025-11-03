@@ -121,28 +121,44 @@ class CaroServer:
         self.matches[match_id] = m
         self.clients[player_x].in_match = match_id
         self.clients[player_o].in_match = match_id
-        await send_json(self.clients[player_x].writer, {"type": "match_start", "you": "X", "opponent": player_o, "size": BOARD_SIZE})
-        await send_json(self.clients[player_o].writer, {"type": "match_start", "you": "O", "opponent": player_x, "size": BOARD_SIZE})
-        await self.start_turn_timer(m)
+
+        await send_json(self.clients[player_x].writer, {
+            "type": "match_start", "you": "X", "opponent": player_o, "size": BOARD_SIZE
+        })
+        await send_json(self.clients[player_o].writer, {
+            "type": "match_start", "you": "O", "opponent": player_x, "size": BOARD_SIZE
+        })
+
+        # Không bắt đầu timer ở đây
+        await send_json(self.clients[player_x].writer, {"type": "your_turn", "deadline": None})
+
 
     async def start_turn_timer(self, m: Match):
         cur_name = m.player_x if m.turn == "X" else m.player_o
         cur_client = self.clients.get(cur_name)
         if not cur_client:
             return
+
+        # Reset deadline cho lượt mới
         m.deadline = time.time() + THINK_TIME_SECONDS
-        await send_json(cur_client.writer, {"type": "your_turn", "deadline": int(m.deadline)})
+        await send_json(cur_client.writer, {
+            "type": "your_turn",
+            "deadline": int(m.deadline)
+        })
 
         async def timer_task(match_id: str, expected_turn: str, deadline: float):
             await asyncio.sleep(THINK_TIME_SECONDS)
             mm = self.matches.get(match_id)
             if not mm:
                 return
-            if mm.deadline and time.time() >= deadline and mm.turn == expected_turn:
+            # Kiểm tra lại deadline để đảm bảo không bị lẫn với lượt mới
+            if mm.deadline and abs(mm.deadline - deadline) < 0.1 and mm.turn == expected_turn:
+                print(f"[TIMEOUT] {expected_turn}'s time expired for match {match_id}")
                 winner = mm.player_o if expected_turn == "X" else mm.player_x
                 await self.finish_match(mm, winner=winner, reason="timeout")
 
         asyncio.create_task(timer_task(m.id, m.turn, m.deadline))
+
 
     def opponent_of(self, m: Match, name: str) -> str:
         return m.player_o if name == m.player_x else m.player_x
@@ -160,17 +176,30 @@ class CaroServer:
             return await send_json(client.writer, {"type": "error", "msg": "bad coords"})
         if m.board[y][x] != ".":
             return await send_json(client.writer, {"type": "error", "msg": "occupied"})
+
+        # Đánh nước đi
         m.board[y][x] = symbol
         m.moves.append({"x": x, "y": y, "symbol": symbol, "ts": int(time.time())})
+
+        # Dừng timer hiện tại (reset)
         m.deadline = None
+
+        # Gửi thông báo nước đi cho hai bên
         await send_json(client.writer, {"type": "move_ok", "x": x, "y": y, "symbol": symbol})
         opp = self.clients.get(self.opponent_of(m, client.name))
         if opp:
             await send_json(opp.writer, {"type": "opponent_move", "x": x, "y": y, "symbol": symbol})
+
+        # Kiểm tra thắng
         if check_win(m.board, x, y, symbol):
             return await self.finish_match(m, winner=client.name, reason="win")
+
+        # Đổi lượt
         m.turn = "O" if m.turn == "X" else "X"
+
+        # ✅ Reset và khởi động thời gian cho người kế tiếp
         await self.start_turn_timer(m)
+
 
     async def finish_match(self, m: Match, winner: Optional[str], reason: str):
         for name in [m.player_x, m.player_o]:
