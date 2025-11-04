@@ -212,15 +212,27 @@ class GuiClient:
             self.set_cell(x, y, sym)
             self.turn = 'O' if sym == 'X' else 'X'
             self.set_status('Waiting')
+        elif t == 'highlight':
+            cells = msg.get('cells', [])
+            winner = msg.get('winner', '')
+            for (x, y) in cells:
+                if 0 <= y < BOARD_SIZE and 0 <= x < BOARD_SIZE:
+                    self.cells[y][x]['bg'] = 'yellow'
+            self.set_status(f'{winner} wins! Highlighting...')
         elif t == 'match_end':
-            who = msg.get('winner')
-            reason = msg.get('reason')
-            messagebox.showinfo('Match ended', f'Winner: {who} (reason: {reason})')
+            result = msg.get('result')
+            if result == 'win':
+                messagebox.showinfo('Kết thúc', 'Bạn đã thắng!')
+            elif result == 'lose':
+                messagebox.showinfo('Kết thúc', 'Bạn đã thua!')
+            else:
+                messagebox.showinfo('Kết thúc', 'Trận đấu đã kết thúc.')
             self.in_match = False
             self.you = None
             self.opponent = None
             self.set_status('Idle')
-            self.clear_board() # Xóa bảng khi trận đấu kết thúc
+            self.clear_board()
+
         elif t == 'error':
             messagebox.showerror('Error', msg.get('msg', ''))
 
@@ -233,6 +245,7 @@ class GuiClient:
         for y in range(BOARD_SIZE):
             for x in range(BOARD_SIZE):
                 self.cells[y][x]['text'] = ''
+                self.cells[y][x]['bg'] = 'SystemButtonFace'
 
     def set_cell(self, x, y, symbol):
         if 0 <= y < BOARD_SIZE and 0 <= x < BOARD_SIZE:

@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, Optional, List
 
-from common import BOARD_SIZE, THINK_TIME_SECONDS, send_json, recv_json, check_win
+from common import BOARD_SIZE, THINK_TIME_SECONDS, send_json, recv_json, check_win, find_win_line
 
 @dataclass
 class Client:
@@ -191,13 +191,39 @@ class CaroServer:
             await send_json(opp.writer, {"type": "opponent_move", "x": x, "y": y, "symbol": symbol})
 
         # Kiểm tra thắng
-        if check_win(m.board, x, y, symbol):
+        win_cells = find_win_line(m.board, x, y, symbol)
+        if win_cells:
+            # Gửi danh sách 5 ô thắng cho cả hai bên để highlight
+            for player_name in [m.player_x, m.player_o]:
+                c = self.clients.get(player_name)
+                if c:
+                    await send_json(c.writer, {
+                        "type": "highlight",
+                        "cells": win_cells,  # danh sách [(x, y), (x, y), ...]
+                        "winner": client.name
+                    })
+            
+            # Đợi 3 giây cho hiệu ứng highlight
+            await asyncio.sleep(3)
+            
+            # Gửi kết quả riêng cho từng bên
+            for pname in [m.player_x, m.player_o]:
+                c = self.clients.get(pname)
+                if not c:
+                    continue
+                if pname == client.name:
+                    await send_json(c.writer, {"type": "match_end", "result": "win"})
+                else:
+                    await send_json(c.writer, {"type": "match_end", "result": "lose"})
+
+            # Sau đó thông báo kết thúc trận
             return await self.finish_match(m, winner=client.name, reason="win")
+
 
         # Đổi lượt
         m.turn = "O" if m.turn == "X" else "X"
 
-        # ✅ Reset và khởi động thời gian cho người kế tiếp
+        # Reset và khởi động thời gian cho người kế tiếp
         await self.start_turn_timer(m)
 
 
