@@ -225,7 +225,7 @@ class CaroServer:
                 c = self.clients.get(pname)
                 if c:
                     await send_json(c.writer, {"type": "match_end", "result": "draw"})
-            return await self.finish_match(m, winner=None, reason="draw")
+            return await self.finish_match(m, winner=None, reason="tie")
         
         # Đổi lượt
         m.turn = "O" if m.turn == "X" else "X"
