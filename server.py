@@ -219,7 +219,14 @@ class CaroServer:
             # Sau đó thông báo kết thúc trận
             return await self.finish_match(m, winner=client.name, reason="win")
 
-
+        # Kiểm tra hòa cờ nếu bàn đã đầy mà không có người thắng
+        if all('.' not in row for row in m.board):
+            for pname in [m.player_x, m.player_o]:
+                c = self.clients.get(pname)
+                if c:
+                    await send_json(c.writer, {"type": "match_end", "result": "draw"})
+            return await self.finish_match(m, winner=None, reason="draw")
+        
         # Đổi lượt
         m.turn = "O" if m.turn == "X" else "X"
 
