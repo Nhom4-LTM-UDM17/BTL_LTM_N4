@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, Optional, List
 
-from common import BOARD_SIZE, THINK_TIME_SECONDS, send_json, recv_json, check_win, find_win_line
+from common import BOARD_SIZE, THINK_TIME_SECONDS, send_json, recv_json, find_win_line
 
 # Dataclass đại diện cho mỗi client kết nối đến server
 @dataclass
@@ -27,12 +27,15 @@ class Match:
 
 # Class chính quản lý server game Caro
 class CaroServer:
-    def __init__(self, host="0.0.0.0", port=7777, db_path="game_history.db"):
+    def __init__(self, host="127.0.0.1", port=7777, db_path="game_history.db"):
         self.host = host
         self.port = port
+        print(f"[DEBUG] Connecting to database: {db_path}")
         # Kết nối database SQLite để lưu lịch sử trận đấu
         self.db = sqlite3.connect(db_path)
+        print("[DEBUG] Database connected successfully")
         # Tạo bảng matches nếu chưa tồn tại
+        print("[DEBUG] Creating matches table if not exists")
         self.db.execute(
             """
             CREATE TABLE IF NOT EXISTS matches (
@@ -291,19 +294,24 @@ class CaroServer:
 
     # Lưu lịch sử trận đấu vào database
     def save_history(self, m: Match, winner: Optional[str]):
-        self.db.execute(
-            "INSERT OR REPLACE INTO matches (id, player_x, player_o, winner, started_at, finished_at, moves) VALUES (?,?,?,?,?,?,?)",
-            (
-                m.id,
-                m.player_x,
-                m.player_o,
-                winner or "none",
-                datetime.fromtimestamp(m.started_at).isoformat(timespec="seconds"),
-                datetime.now().isoformat(timespec="seconds"),
-                json.dumps(m.moves, ensure_ascii=False),
-            ),
-        )
-        self.db.commit()
+        try:
+            print(f"[DEBUG] Saving match history: {m.id}")
+            self.db.execute(
+                "INSERT OR REPLACE INTO matches (id, player_x, player_o, winner, started_at, finished_at, moves) VALUES (?,?,?,?,?,?,?)",
+                (
+                    m.id,
+                    m.player_x,
+                    m.player_o,
+                    winner or "none",
+                    datetime.fromtimestamp(m.started_at).isoformat(timespec="seconds"),
+                    datetime.now().isoformat(timespec="seconds"),
+                    json.dumps(m.moves, ensure_ascii=False),
+                ),
+            )
+            self.db.commit()
+            print(f"[DEBUG] Successfully saved match: {m.id} - {m.player_x} vs {m.player_o}, winner: {winner}")
+        except Exception as e:
+            print(f"[ERROR] Failed to save match history: {e}")
 
     # Chuyển tiếp tin nhắn chat giữa hai người chơi trong trận
     async def relay_chat(self, client: Client, text: str):
