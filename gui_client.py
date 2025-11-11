@@ -2,8 +2,9 @@ import asyncio
 import json
 import threading
 import tkinter as tk
-from tkinter import messagebox, simpledialog
+from tkinter import messagebox, scrolledtext
 from queue import Queue, Empty
+import time
 
 HOST = '127.0.0.1'
 PORT = 7777
@@ -13,10 +14,12 @@ BOARD_SIZE = 15
 class GuiClient:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title('Caro - GUI Client')
-        self.root.minsize(600, 450)
-        
-        self.queue: Queue = Queue()
+        self.root.title('Caro Online')
+        self.root.geometry("1100x700")
+        self.root.config(bg="#1e1e2f")
+
+        # Network + state
+        self.queue = Queue()
         self.reader = None
         self.writer = None
         self.loop = None
@@ -25,65 +28,98 @@ class GuiClient:
         self.you = None
         self.opponent = None
         self.turn = None
+        self.deadline = None
+        self.timer_id = None
 
-        top = tk.Frame(root)
-        top.pack(side='top', fill='x')
-        tk.Label(top, text='Name:').pack(side='left')
+        # ========== HEADER ==========
+        header = tk.Frame(root, bg="#252539", pady=10)
+        header.pack(side='top', fill='x')
+        tk.Label(header, text='Name:', bg="#252539", fg="white").pack(side='left', padx=5)
         self.name_var = tk.StringVar(value='Player')
-        tk.Entry(top, textvariable=self.name_var, width=12).pack(side='left')
-        self.connect_btn = tk.Button(top, text='Connect', command=self.on_connect)
-        self.connect_btn.pack(side='left')
-        self.disconnect_btn = tk.Button(top, text='Disconnect', command=self.on_disconnect, state='disabled')
-        self.disconnect_btn.pack(side='left')
+        tk.Entry(header, textvariable=self.name_var, width=15, bg="#333347", fg="white", insertbackground="white").pack(side='left', padx=5)
+        self.connect_btn = tk.Button(header, text='Connect', command=self.on_connect, bg="#0078D7", fg="white", relief='flat')
+        self.connect_btn.pack(side='left', padx=5)
+        self.disconnect_btn = tk.Button(header, text='Disconnect', command=self.on_disconnect, bg="#d9534f", fg="white", relief='flat', state='disabled')
+        self.disconnect_btn.pack(side='left', padx=5)
 
-        self.users_listbox = tk.Listbox(root, height=6)
-        self.users_listbox.pack(side='left', fill='y', padx=4, pady=4)
-        
-        btn_frame = tk.Frame(root)
-        btn_frame.pack(side='left', fill='y')
-        self.challenge_btn = tk.Button(btn_frame, text='Challenge', command=self.on_challenge, state='disabled')
-        self.challenge_btn.pack(pady=2)
+        # ========== LEFT PANEL ==========
+        left_panel = tk.Frame(root, bg="#2b2b3c", width=180)
+        left_panel.pack(side='left', fill='y')
+        tk.Label(left_panel, text='Online Users', bg="#2b2b3c", fg="#00FFAA", font=("Segoe UI", 12, "bold")).pack(pady=10)
+        self.users_listbox = tk.Listbox(left_panel, height=15, bg="#1e1e2f", fg="white", selectbackground="#00FFAA", relief='flat')
+        self.users_listbox.pack(fill='y', padx=8)
+        self.challenge_btn = tk.Button(left_panel, text='Challenge', command=self.on_challenge, bg="#00b894", fg="white", relief='flat', state='disabled')
+        self.challenge_btn.pack(pady=10)
 
-        board_frame = tk.Frame(root)
-        board_frame.pack(side='left', fill='both', expand=True, padx=8, pady=8)
-        
+        # ========== CENTER: BOARD ==========
+        center_frame = tk.Frame(root, bg="#1e1e2f")
+        center_frame.pack(side='left', expand=True, fill='both', padx=10, pady=10)
+
         self.cells = []
         for y in range(BOARD_SIZE):
             row = []
             for x in range(BOARD_SIZE):
-                b = tk.Button(board_frame, text='', width=2, height=1, command=lambda xx=x, yy=y: self.on_cell(xx, yy))
-                b.grid(row=y, column=x, sticky='nsew')
-                b['state'] = 'disabled' # Vô hiệu hóa bàn cờ ban đầu
+                b = tk.Button(center_frame, text='', width=2, height=1, font=("Consolas", 16, "bold"),
+                              bg="#2b2b3c", fg="white", activebackground="#3a3a50",
+                              command=lambda xx=x, yy=y: self.on_cell(xx, yy))
+                b.grid(row=y, column=x, sticky='nsew', padx=1, pady=1)
+                b['state'] = 'disabled'
                 row.append(b)
             self.cells.append(row)
-
         for i in range(BOARD_SIZE):
-            board_frame.grid_rowconfigure(i, weight=1)
-            board_frame.grid_columnconfigure(i, weight=1)
+            center_frame.grid_rowconfigure(i, weight=1)
+            center_frame.grid_columnconfigure(i, weight=1)
 
-        status = tk.Frame(root)
-        status.pack(side='bottom', fill='x')
+        # ========== RIGHT PANEL: CHAT ==========
+        right_panel = tk.Frame(root, bg="#2b2b3c", width=250)
+        right_panel.pack(side='right', fill='y')
+        tk.Label(right_panel, text='Chat', bg="#2b2b3c", fg="#FFD700", font=("Segoe UI", 12, "bold")).pack(pady=5)
+
+        self.chat_area = scrolledtext.ScrolledText(right_panel, width=30, height=25, bg="#1e1e2f", fg="white", wrap='word', state='disabled')
+        self.chat_area.pack(padx=10, pady=5, fill='both', expand=True)
+
+        chat_entry_frame = tk.Frame(right_panel, bg="#2b2b3c")
+        chat_entry_frame.pack(fill='x', padx=10, pady=5)
+        self.chat_entry = tk.Entry(chat_entry_frame, bg="#333347", fg="white", relief='flat')
+        self.chat_entry.pack(side='left', fill='x', expand=True, padx=(0, 5))
+        tk.Button(chat_entry_frame, text='Send', command=self.on_send_chat, bg="#00AEEF", fg="white", relief='flat').pack(side='right')
+
+        # ========== STATUS BAR ==========
+        status_bar = tk.Frame(root, bg="#252539", pady=6)
+        status_bar.pack(side='bottom', fill='x')
+
+        left_status = tk.Frame(status_bar, bg="#252539")
+        left_status.pack(side='left', fill='x', expand=True)
+
+        right_status = tk.Frame(status_bar, bg="#252539")
+        right_status.pack(side='right')
+
         self.status_var = tk.StringVar(value='Not connected')
-        tk.Label(status, textvariable=self.status_var).pack(side='left')
+        self.status_label = tk.Label(left_status, textvariable=self.status_var, bg="#252539",
+                                     fg="#FFD700", font=("Segoe UI", 10, "italic"))
+        self.status_label.pack(side='left', padx=10)
+
+        self.timer_var = tk.StringVar(value='')
+        self.timer_label = tk.Label(right_status, textvariable=self.timer_var,
+                                    bg="#252539", fg="#00FFAA", font=("Consolas", 12, "bold"))
+        self.timer_label.pack(side='right', padx=20)
 
         self.root.after(100, self.process_queue)
 
+    # ================== NETWORK ==================
     def on_connect(self):
         if self.writer:
             messagebox.showinfo('Info', 'Already connected')
             return
         self.name = self.name_var.get().strip() or 'Player'
-        self.status_var.set('Connecting...')
+        self.set_status('Connecting...')
         self.connect_btn['state'] = 'disabled'
         threading.Thread(target=self.start_async_loop, daemon=True).start()
 
     def on_disconnect(self):
-        self.status_var.set('Disconnecting...')
+        self.set_status('Disconnecting...')
         if self.writer and self.loop:
-            # Gửi tác vụ đóng writer lên event loop
             self.loop.call_soon_threadsafe(self.writer.close)
-        # Các việc dọn dẹp khác (như self.loop = None) sẽ 
-        # được thực hiện trong finally của async_main
 
     def on_challenge(self):
         sel = self.users_listbox.curselection()
@@ -97,44 +133,31 @@ class GuiClient:
         self.send_json({'type': 'challenge', 'opponent': opponent})
 
     def on_cell(self, x, y):
-        if not self.in_match:
+        if not self.in_match or self.you != self.turn:
             return
-        if self.you != self.turn:
-            messagebox.showinfo('Info', "Not your turn")
-            return
-        
-        # Vô hiệu hóa bàn cờ ngay sau khi bấm
         self.disable_board()
         self.send_json({'type': 'move', 'x': x, 'y': y})
 
-    def process_queue(self):
-        try:
-            while True:
-                fn, args = self.queue.get_nowait()
-                try:
-                    fn(*args)
-                except Exception as e:
-                    print(f'UI handler error: {e}')
-        except Empty:
-            pass
-        self.root.after(100, self.process_queue)
+    def on_send_chat(self):
+        text = self.chat_entry.get().strip()
+        if not text or not self.in_match:
+            return
+        self.send_json({'type': 'chat', 'text': text})
+        self.append_chat(f'You: {text}\n', "you")
+        self.chat_entry.delete(0, tk.END)
 
     def start_async_loop(self):
         try:
-            self.loop = asyncio.get_event_loop()
-        except RuntimeError:
             self.loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
-            
-        try:
             self.loop.run_until_complete(self.async_main())
         except Exception as e:
             print(f"Async loop error: {e}")
             self.queue.put((self.handle_disconnect, ()))
         finally:
-            self.loop.close()
+            if self.loop:
+                self.loop.close()
             self.loop = None
-            print("Async loop closed.")
 
     async def async_main(self):
         try:
@@ -143,89 +166,116 @@ class GuiClient:
             self.queue.put((self.set_status, (f'Connect failed: {e}',)))
             self.queue.put((self.handle_disconnect, ()))
             return
-        
+
         await self.send_json_async({'type': 'login', 'name': self.name})
-        
         try:
             while True:
                 line = await self.reader.readline()
                 if not line:
-                    print("Server closed connection (empty line)")
                     break
-                try:
-                    msg = json.loads(line.decode('utf-8').strip())
-                    # Gửi tin nhắn về luồng UI để xử lý
-                    self.queue.put((self.handle_msg, (msg,)))
-                except json.JSONDecodeError:
-                    print(f"Received invalid JSON: {line.decode('utf-8')}")
-                except Exception as e:
-                    print(f"Error processing message: {e}")
-        
-        except ConnectionError as e:
-            print(f'Connection lost: {e}')
-        except asyncio.CancelledError:
-            print("Read loop cancelled.")
-        except Exception as e:
-            print(f'Read loop error: {e}')
+                msg = json.loads(line.decode('utf-8').strip())
+                self.queue.put((self.handle_msg, (msg,)))
         finally:
-            # Bất kể lý do gì, khi vòng lặp đọc kết thúc -> xử lý ngắt kết nối
             self.queue.put((self.handle_disconnect, ()))
             if self.writer:
                 self.writer.close()
                 try:
                     await self.writer.wait_closed()
-                except: pass
-            self.writer = None
-            self.reader = None
-
+                except:
+                    pass
 
     async def send_json_async(self, obj):
         if not self.writer or self.writer.is_closing():
             return
         data = json.dumps(obj, ensure_ascii=False) + '\n'
         self.writer.write(data.encode('utf-8'))
-        try:
-            await self.writer.drain()
-        except Exception as e:
-            print(f"Error draining writer: {e}")
-            if self.writer:
-                self.writer.close()
-            self.writer = None
-
+        await self.writer.drain()
 
     def send_json(self, obj):
         if not self.writer or not self.loop or self.writer.is_closing():
             messagebox.showinfo('Info', 'Not connected')
             return
-        
+        asyncio.run_coroutine_threadsafe(self.send_json_async(obj), self.loop)
+
+    # ================== UI HELPERS ==================
+    def process_queue(self):
         try:
-            if self.loop.is_running():
-                asyncio.run_coroutine_threadsafe(self.send_json_async(obj), self.loop)
-            else:
-                print("Event loop is not running. Cannot send.")
-        except RuntimeError as e:
-             print(f"Error sending json: {e}")
-             self.queue.put((self.handle_disconnect, ()))
+            while True:
+                fn, args = self.queue.get_nowait()
+                fn(*args)
+        except Empty:
+            pass
+        self.root.after(100, self.process_queue)
 
-    # ========================
-    # UI HANDLERS (Chạy trên luồng chính)
-    # ========================
+    def set_status(self, text):
+        self.status_var.set(text)
 
-    def set_status(self, s):
-        self.status_var.set(s)
-    
     def enable_board(self):
         for y in range(BOARD_SIZE):
             for x in range(BOARD_SIZE):
-                 self.cells[y][x]['state'] = 'normal'
+                if self.cells[y][x]['text'] == '':
+                    self.cells[y][x]['state'] = 'normal'
 
     def disable_board(self):
         for y in range(BOARD_SIZE):
             for x in range(BOARD_SIZE):
-                 self.cells[y][x]['state'] = 'disabled'
+                self.cells[y][x]['state'] = 'disabled'
 
+    def clear_board(self):
+        for y in range(BOARD_SIZE):
+            for x in range(BOARD_SIZE):
+                self.cells[y][x].config(text='', bg="#2b2b3c", fg="white")
+
+    def set_cell(self, x, y, symbol):
+        fg_color = "#FFFFFF"
+        bg_color = "#0078D7" if symbol == "X" else "#FF3B30"
+        self.cells[y][x].config(
+            text=symbol,
+            fg=fg_color,
+            bg=bg_color,
+            disabledforeground=fg_color
+        )
+
+    def append_chat(self, text, tag=None):
+        self.chat_area.config(state='normal')
+        if tag == "you":
+            self.chat_area.insert(tk.END, text, ("you",))
+        else:
+            self.chat_area.insert(tk.END, text)
+        self.chat_area.config(state='disabled')
+        self.chat_area.see(tk.END)
+
+    # ================== COUNTDOWN ==================
+    def start_countdown(self, deadline):
+        if not deadline:
+            return
+        self.deadline = deadline
+        self.update_timer()
+
+    def update_timer(self):
+        if not self.deadline:
+            self.timer_var.set('')
+            return
+
+        remaining = int(self.deadline - time.time())
+        if remaining > 0:
+            self.timer_var.set(f"{remaining}s left")
+            self.timer_id = self.root.after(1000, self.update_timer)
+        else:
+            self.timer_var.set("Time's up!")
+            self.stop_countdown()
+            messagebox.showinfo("Hết giờ", "Thời gian của bạn đã hết! Trận đấu kết thúc.")
+            self.set_status("You lost (timeout).")
+            self.send_json({'type': 'timeout'})
+
+    def stop_countdown(self):
+        if self.timer_id:
+            self.root.after_cancel(self.timer_id)
+        self.timer_var.set('')
+        self.deadline = None
+
+    # ================== MESSAGE HANDLING ==================
     def handle_disconnect(self):
-        """Hàm dọn dẹp giao diện khi ngắt kết nối."""
         self.set_status('Disconnected')
         self.connect_btn['state'] = 'normal'
         self.disconnect_btn['state'] = 'disabled'
@@ -233,153 +283,88 @@ class GuiClient:
         self.users_listbox.delete(0, tk.END)
         self.clear_board()
         self.disable_board()
-        
-        if self.in_match:
-            messagebox.showinfo("Info", "Trận đấu đã kết thúc do mất kết nối.")
-        
+        self.chat_area.config(state='normal')
+        self.chat_area.delete('1.0', tk.END)
+        self.chat_area.config(state='disabled')
+        self.stop_countdown()
         self.in_match = False
-        self.you = None
-        self.opponent = None
-        self.turn = None
 
     def handle_msg(self, msg):
         t = msg.get('type')
-        
         if t == 'login_ok':
             self.set_status(f'Connected as {self.name}')
             self.connect_btn['state'] = 'disabled'
             self.disconnect_btn['state'] = 'normal'
             self.challenge_btn['state'] = 'normal'
-            users = msg.get('users', [])
-            self.update_users(users)
-        
+            self.update_users(msg.get('users', []))
+
         elif t == 'user_list':
             self.update_users(msg.get('users', []))
-        
+
         elif t == 'invite':
             frm = msg.get('from')
-            if self.in_match: # Từ chối tự động nếu đang bận
-                self.send_json({'type': 'reject', 'opponent': frm})
-                return
-            
             if messagebox.askyesno('Invite', f'Accept challenge from {frm}?'):
                 self.send_json({'type': 'accept', 'opponent': frm})
-            # else: # Gửi từ chối (nếu server hỗ trợ)
-            #     self.send_json({'type': 'reject', 'opponent': frm})
 
         elif t == 'match_start':
             self.in_match = True
             self.you = msg.get('you')
             self.opponent = msg.get('opponent')
-            self.turn = None # Chờ 'your_turn'
+            self.turn = None
             self.clear_board()
-            self.disable_board() # Vô hiệu hóa cho đến khi 'your_turn'
-            self.set_status(f'In match vs {self.opponent}. You are "{self.you}"')
-        
+            self.disable_board()
+            self.set_status(f'Playing vs {self.opponent} (You: {self.you})')
+
         elif t == 'your_turn':
             self.turn = self.you
-            self.set_status('Your turn!')
-            self.enable_board() # Kích hoạt bàn cờ
-        
-        elif t == 'opponent_move':
-            x = msg.get('x'); y = msg.get('y'); sym = msg.get('symbol')
-            self.set_cell(x, y, sym)
-        
-        elif t == 'move_ok':
-            x = msg.get('x'); y = msg.get('y'); sym = msg.get('symbol')
-            self.set_cell(x, y, sym)
-            self.turn = None # Chờ lượt đối thủ
-            self.set_status('Waiting for opponent...')
-            self.disable_board() # Vô hiệu hóa
-        
-        elif t == 'highlight':
-            cells = msg.get('cells', [])
-            winner = msg.get('winner', '')
-            for (x, y) in cells:
-                if 0 <= y < BOARD_SIZE and 0 <= x < BOARD_SIZE:
-                    self.cells[y][x]['bg'] = 'yellow'
-            self.set_status(f'{winner} wins! Highlighting...')
-    
-        elif t == 'match_end':
-            result = msg.get('result') 
-            reason = msg.get('reason', 'ended') 
-            
-            message_text = "Trận đấu kết thúc."
+            deadline = msg.get('deadline')
+            if deadline:
+                self.start_countdown(deadline)
+            self.enable_board()
+            self.set_status("Your turn!")
 
-            if result == 'win':
-                if reason == 'timeout':
-                    message_text = 'Bạn đã thắng (Đối thủ hết giờ)!'
-                elif reason == 'disconnect':
-                    message_text = 'Bạn đã thắng (Đối thủ ngắt kết nối)!'
-                else: # reason == 'win'
-                    message_text = 'Bạn đã thắng!'
-            
-            elif result == 'lose':
-                if reason == 'timeout':
-                    message_text = 'Bạn đã thua (Bạn hết giờ)!'
-                elif reason == 'disconnect':
-                    message_text = 'Bạn đã thua (Bạn ngắt kết nối)!'
-                else: # reason == 'win'
-                    message_text = 'Bạn đã thua!'
-            
-            elif reason == 'tie': # Dành cho tương lai nếu có xử lý hòa
-                message_text = 'Trận đấu hòa!'
-            
-            messagebox.showinfo('Kết thúc', message_text)
-
-            self.in_match = False
-            self.you = None
-            self.opponent = None
+        elif t == 'opponent_move' or t == 'move_ok':
+            x, y, sym = msg.get('x'), msg.get('y'), msg.get('symbol')
+            self.set_cell(x, y, sym)
             self.turn = None
-            self.set_status('Idle. Select a user to challenge.')
+            self.stop_countdown()
+            self.disable_board()
+            self.set_status("Waiting for opponent...")
+
+        elif t == 'highlight':
+            for (x, y) in msg.get('cells', []):
+                self.cells[y][x]['bg'] = '#FFF176'
+            self.set_status(f"{msg.get('winner', '')} wins!")
+
+        elif t == 'match_end':
+            result = msg.get('result')
+            if result == 'win':
+                messagebox.showinfo("Result", "You win!")
+            elif result == 'lose':
+                messagebox.showinfo("Result", "You lose!")
             self.clear_board()
-            self.disable_board() # Vô hiệu hóa bàn cờ sau khi trận kết thúc
+            self.disable_board()
+            self.stop_countdown()
+            self.in_match = False
+
+        elif t == 'chat':
+            sender = msg.get('from')
+            text = msg.get('text')
+            self.append_chat(f'{sender}: {text}\n')
 
         elif t == 'error':
-            errmsg = msg.get('msg', '')
-            messagebox.showerror('Error', errmsg)
-            if errmsg == "Name already in use":
-                self.handle_disconnect() # Xử lý như ngắt kết nối
+            messagebox.showerror('Error', msg.get('msg', ''))
 
     def update_users(self, users):
         self.users_listbox.delete(0, tk.END)
         for u in users:
             self.users_listbox.insert(tk.END, u)
 
-    def clear_board(self):
-        for y in range(BOARD_SIZE):
-            for x in range(BOARD_SIZE):
-                self.cells[y][x]['text'] = ''
-                self.cells[y][x]['bg'] = 'SystemButtonFace' # Màu nút mặc định
-
-    def set_cell(self, x, y, symbol):
-        if 0 <= y < BOARD_SIZE and 0 <= x < BOARD_SIZE:
-             self.cells[y][x]['text'] = symbol
-        else:
-             print(f"Invalid cell coordinates: ({x}, {y})")
-
 
 def main():
     root = tk.Tk()
     app = GuiClient(root)
-    
-    def on_closing():
-        print("Closing application...")
-        app.on_disconnect()
-        
-        try:
-            if app.loop and app.loop.is_running():
-                # Dừng loop từ luồng chính
-                app.loop.call_soon_threadsafe(app.loop.stop)
-                print("Requested asyncio loop stop.")
-        except RuntimeError:
-            pass
-        except Exception as e:
-            print(f"Error stopping loop: {e}")
-            
-        root.destroy()
-
-    root.protocol("WM_DELETE_WINDOW", on_closing)
+    root.protocol("WM_DELETE_WINDOW", lambda: (app.on_disconnect(), root.destroy()))
     root.mainloop()
 
 
