@@ -170,7 +170,7 @@ class CaroServer:
         })
 
         # Gửi thông báo đến lượt X (không bắt đầu timer ở đây)
-        await send_json(self.clients[player_x].writer, {"type": "your_turn", "deadline": None})
+        await self.start_turn_timer(m)
 
     # Bắt đầu đếm thời gian cho lượt hiện tại
     async def start_turn_timer(self, m: Match):
