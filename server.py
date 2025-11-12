@@ -1,4 +1,7 @@
-import asyncio, sqlite3, json, time
+import asyncio
+import sqlite3
+import json
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, Optional, List
@@ -256,25 +259,13 @@ class CaroServer:
             # Đợi 3 giây cho hiệu ứng highlight
             await asyncio.sleep(3)
             
-            # Gửi kết quả riêng cho từng bên
-            for pname in [m.player_x, m.player_o]:
-                c = self.clients.get(pname)
-                if not c:
-                    continue
-                if pname == client.name:
-                    await send_json(c.writer, {"type": "match_end", "result": "win"})
-                else:
-                    await send_json(c.writer, {"type": "match_end", "result": "lose"})
-
-            # Kết thúc trận đấu
+            # Gọi finish_match để gửi thông báo kết thúc, lưu lịch sử và dọn dẹp
             return await self.finish_match(m, winner=client.name, reason="win")
 
         # Kiểm tra hòa cờ nếu bàn đã đầy mà không có người thắng
-        if all('.' not in row for row in m.board):
-            for pname in [m.player_x, m.player_o]:
-                c = self.clients.get(pname)
-                if c:
-                    await send_json(c.writer, {"type": "match_end", "result": "draw"})
+        # Dùng biểu thức rõ ràng: mọi ô đều khác "."
+        if all(cell != "." for row in m.board for cell in row):
+            # Gọi finish_match để xử lý chung (finish_match sẽ gửi thông báo cho client và lưu lịch sử).
             return await self.finish_match(m, winner=None, reason="tie")
         
         # Đổi lượt
@@ -285,15 +276,56 @@ class CaroServer:
 
     # Kết thúc trận đấu và lưu vào database
     async def finish_match(self, m: Match, winner: Optional[str], reason: str):
-        # Gửi thông báo kết thúc cho cả hai người chơi
+        """
+        Kết thúc trận:
+        - Gửi một thông báo match_end duy nhất cho mỗi client với trường 'result':
+            'win'  -> thông báo cho người thắng
+            'lose' -> thông báo cho người thua
+            'draw' -> hòa (winner is None)
+        - Cập nhật c.in_match = None
+        - Lưu lịch sử và xóa trận khỏi bộ nhớ
+        """
+        # Gửi thông báo kết thúc cho cả hai người chơi (một lần, định dạng thống nhất)
         for name in [m.player_x, m.player_o]:
             c = self.clients.get(name)
-            if c:
-                who = "you" if winner == name else ("opponent" if winner else "none")
-                await send_json(c.writer, {"type": "match_end", "reason": reason, "winner": who})
-                c.in_match = None  # Đánh dấu không còn trong trận
-        
-        # Lưu lịch sử trận đấu
+            if not c:
+                continue
+
+            if winner is None:
+                # Hòa
+                try:
+                    await send_json(c.writer, {
+                        "type": "match_end",
+                        "result": "draw",
+                        "reason": reason,
+                        "winner": "none"
+                    })
+                except:
+                    pass
+            else:
+                # Có người thắng
+                try:
+                    if name == winner:
+                        await send_json(c.writer, {
+                            "type": "match_end",
+                            "result": "win",
+                            "reason": reason,
+                            "winner": "you"
+                        })
+                    else:
+                        await send_json(c.writer, {
+                            "type": "match_end",
+                            "result": "lose",
+                            "reason": reason,
+                            "winner": "opponent"
+                        })
+                except:
+                    pass
+
+            # Đánh dấu client không còn trong trận
+            c.in_match = None
+
+        # Lưu lịch sử trận đấu (winner là tên người thắng hoặc None)
         self.save_history(m, winner)
         
         # Xóa trận đấu khỏi danh sách

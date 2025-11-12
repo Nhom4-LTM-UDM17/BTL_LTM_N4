@@ -274,6 +274,19 @@ class GuiClient:
         self.timer_var.set('')
         self.deadline = None
 
+    # ================== KIỂM TRA BÀN CỜ (DỰ PHÒNG TRƯỜNG HỢP HÒA) ==================
+    # Hàm này là một biện pháp phòng hộ để phát hiện trường hợp hòa tại phía client
+    # (trong trường hợp server không gửi thông báo `match_end` khi hòa).
+    # Trả về True khi tất cả ô đã được đi (không còn ô trống), ngược lại trả về False.
+    def is_board_full(self):
+        for y in range(BOARD_SIZE):
+            for x in range(BOARD_SIZE):
+                # Nếu còn ô rỗng ('') => bàn chưa đầy
+                if self.cells[y][x]['text'] == '':
+                    return False
+        # Không còn ô rỗng => bàn đã đầy
+        return True
+
     # ================== MESSAGE HANDLING ==================
     def handle_disconnect(self):
         self.set_status('Disconnected')
@@ -324,10 +337,31 @@ class GuiClient:
             self.set_status("Your turn!")
 
         elif t == 'opponent_move' or t == 'move_ok':
+            # Xử lý khi có nước đi từ đối thủ hoặc server xác nhận nước đi của bạn là hợp lệ
             x, y, sym = msg.get('x'), msg.get('y'), msg.get('symbol')
+            # Cập nhật ô trên giao diện
             self.set_cell(x, y, sym)
             self.turn = None
+            # Dừng bộ đếm thời gian của lượt hiện tại (nếu có)
             self.stop_countdown()
+
+            # --- Kiểm tra hòa ở phía client (fallback) ---
+            # Nếu sau khi đặt nước này mà bàn cờ đã đầy và không có thông báo highlight/win
+            # thì coi như trận hòa. Đây là biện pháp phòng khi server không gửi `match_end`.
+            if self.is_board_full():
+                # Đánh dấu kết thúc trận trên client để tránh hành động lặp lại
+                self.in_match = False
+                # Thông báo kết quả hòa cho người chơi
+                messagebox.showinfo("Result", "Hòa (Draw)!")
+                # Dọn dẹp giao diện: xóa bàn, tắt bàn và dừng đồng hồ
+                self.clear_board()
+                self.disable_board()
+                self.stop_countdown()
+                # Cập nhật trạng thái
+                self.set_status("Match ended: draw")
+                return
+
+            # Nếu chưa hòa thì chuyển sang trạng thái chờ đối thủ
             self.disable_board()
             self.set_status("Waiting for opponent...")
 
@@ -337,11 +371,22 @@ class GuiClient:
             self.set_status(f"{msg.get('winner', '')} wins!")
 
         elif t == 'match_end':
+            # Xử lý kết thúc trận do server thông báo.
             result = msg.get('result')
             if result == 'win':
+                # Server thông báo bạn thắng
                 messagebox.showinfo("Result", "You win!")
             elif result == 'lose':
+                # Server thông báo bạn thua
                 messagebox.showinfo("Result", "You lose!")
+            elif result == 'draw' or result == 'tie':
+                # Server thông báo hòa
+                messagebox.showinfo("Result", "Hòa (Draw)!")
+            else:
+                # Trường hợp server gửi kết quả không rõ — vẫn dọn dẹp giao diện
+                messagebox.showinfo("Result", f"Match ended: {result}")
+
+            # Dọn dẹp giao diện và trạng thái sau khi trận kết thúc
             self.clear_board()
             self.disable_board()
             self.stop_countdown()
