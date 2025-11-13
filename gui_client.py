@@ -6,7 +6,7 @@ from tkinter import messagebox, scrolledtext
 from queue import Queue, Empty
 import time
 
-HOST = "192.168.227.92"
+HOST = "127.0.0.1"
 PORT = 7777
 BOARD_SIZE = 15
 
@@ -326,9 +326,23 @@ class GuiClient:
             print(f"Async loop error: {e}")
             self.queue.put((self.handle_disconnect, ()))
         finally:
-            if self.loop:
-                self.loop.close()
+            # if self.loop:
+            #     self.loop.close()
+            # self.loop = None
+            # Đóng tất cả pending tasks
+            pending = asyncio.all_tasks(self.loop)
+            for task in pending:
+                task.cancel()
+            
+            # Chờ tasks bị cancel xong
+            if pending:
+                self.loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            
+            # Đóng loop và reset biến
+            self.loop.close()
             self.loop = None
+            self.writer = None
+            self.reader = None
 
     async def async_main(self):
         try:
@@ -348,13 +362,24 @@ class GuiClient:
                 msg = json.loads(line.decode('utf-8').strip())
                 self.queue.put((self.handle_msg, (msg,)))
         finally:
+            # self.queue.put((self.handle_disconnect, ()))
+            # if self.writer:
+            #     self.writer.close()
+            #     try:
+            #         await self.writer.wait_closed()
+            #     except:
+            #         pass
+            # Gọi handle_disconnect để reset UI
             self.queue.put((self.handle_disconnect, ()))
+            # Đảm bảo writer được đóng và reset
             if self.writer:
-                self.writer.close()
                 try:
+                    self.writer.close()
                     await self.writer.wait_closed()
                 except:
                     pass
+                self.writer = None
+            self.reader = None
 
     async def send_json_async(self, obj):
         if not self.writer or self.writer.is_closing():
@@ -364,8 +389,15 @@ class GuiClient:
         await self.writer.drain()
 
     def send_json(self, obj):
-        if not self.writer or not self.loop or self.writer.is_closing():
+        # if not self.writer or not self.loop or self.writer.is_closing():
+        #     messagebox.showinfo('Info', 'Not connected')
+        #     return
+        # asyncio.run_coroutine_threadsafe(self.send_json_async(obj), self.loop)
+        if not self.writer or not self.loop:
             messagebox.showinfo('Info', 'Not connected')
+            return
+        if self.writer.is_closing():
+            messagebox.showinfo('Info', 'Connection is closing')
             return
         asyncio.run_coroutine_threadsafe(self.send_json_async(obj), self.loop)
 
@@ -435,6 +467,8 @@ class GuiClient:
         self.stop_countdown()
         self.in_match = False
         self.highlighted = []
+        # self.writer = None
+        # self.reader = None
 
     def handle_msg(self, msg):
         t = msg.get('type')
