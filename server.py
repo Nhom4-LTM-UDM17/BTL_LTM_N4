@@ -58,7 +58,7 @@ class Match:
 # ============================================
 
 class CaroServer:
-    def __init__(self, host="127.0.0.1", port=7777, db_path="game_history.db"):
+    def __init__(self, host="0.0.0.0", port=7777, db_path="game_history.db"):
         """
         Khởi tạo server - như mở cửa hàng cờ
         - Kết nối database để lưu lịch sử
