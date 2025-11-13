@@ -6,7 +6,7 @@ from tkinter import messagebox, scrolledtext
 from queue import Queue, Empty
 import time
 
-HOST = '127.0.0.1'
+HOST = "192.168.227.92"
 PORT = 7777
 BOARD_SIZE = 15
 
@@ -96,6 +96,7 @@ class GuiClient:
         chat_entry_frame.pack(fill='x', padx=10, pady=5)
         self.chat_entry = tk.Entry(chat_entry_frame, bg="#333347", fg="white", relief='flat')
         self.chat_entry.pack(side='left', fill='x', expand=True, padx=(0, 5))
+        self.chat_entry.bind('<Return>', self.on_send_chat)
         tk.Button(chat_entry_frame, text='Send', command=self.on_send_chat, bg="#00AEEF", fg="white", relief='flat').pack(side='right')
 
         self.root.after(100, self.process_queue)
@@ -308,7 +309,7 @@ class GuiClient:
         self.disable_board()
         self.send_json({'type': 'move', 'x': x, 'y': y})
 
-    def on_send_chat(self):
+    def on_send_chat(self, event=None):
         text = self.chat_entry.get().strip()
         if not text or not self.in_match:
             return
