@@ -62,11 +62,6 @@ def parse_coord(token: str) -> Optional[Tuple[int, int]]:
     """
     Phân tích chuỗi tọa độ do người chơi nhập và chuyển thành cặp (x, y).
     
-    Các định dạng được hỗ trợ:
-        - "A5", "C10"    : Cột (chữ) + Hàng (số), ví dụ A5 → (0, 4)
-        - "3,4"          : x,y phân cách bằng dấu phẩy
-        - "3 4"          : x y phân cách bằng khoảng trắng
-    
     Args:
         token: Chuỗi tọa độ nhập vào
         
@@ -79,41 +74,14 @@ def parse_coord(token: str) -> Optional[Tuple[int, int]]:
     
     token = token.strip().lower()
     
-    # Trường hợp 1: dạng "x,y"
-    if ',' in token:
-        try:
-            parts = token.split(',')
-            if len(parts) == 2:
-                x, y = int(parts[0].strip()), int(parts[1].strip())
-                if 0 <= x < BOARD_SIZE and 0 <= y < BOARD_SIZE:
-                    return x, y
-        except (ValueError, IndexError):
-            pass
-        return None
-    
-    # Trường hợp 2: dạng "x y"
-    if ' ' in token:
-        try:
-            parts = token.split()
-            if len(parts) == 2:
-                x, y = int(parts[0]), int(parts[1])
-                if 0 <= x < BOARD_SIZE and 0 <= y < BOARD_SIZE:
-                    return x, y
-        except (ValueError, IndexError):
-            pass
-        return None
-    
-    # Trường hợp 3: dạng "A5", "C10"
-    if token and token[0].isalpha():
-        col = token[0].upper()
-        if col in COORDS:
-            try:
-                row = int(token[1:])
-                if 1 <= row <= BOARD_SIZE:
-                    return COORDS.index(col), row - 1
-            except ValueError:
-                pass
-    
+    try:
+        parts = token.split(',')
+        if len(parts) == 2:
+            x, y = int(parts[0].strip()), int(parts[1].strip())
+            if 0 <= x < BOARD_SIZE and 0 <= y < BOARD_SIZE:
+                return x, y
+    except (ValueError, IndexError):
+        pass
     return None
 
 

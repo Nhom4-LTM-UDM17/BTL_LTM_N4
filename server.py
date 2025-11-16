@@ -4,6 +4,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+import socket
 from typing import Dict, Optional, List
 
 from common import BOARD_SIZE, THINK_TIME_SECONDS, send_json, recv_json, find_win_line
@@ -100,6 +101,19 @@ class CaroServer:
         if hasattr(self, 'db'):
             self.db.close()
             print("[INFO] Database connection closed")
+            
+    def get_local_ip(self):
+        """Lấy IP nội bộ của máy (LAN IP)"""
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            # kết nối giả để router cấp IP
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+        except Exception:
+            ip = "127.0.0.1"
+        finally:
+            s.close()
+        return ip
 
     async def start(self):
         """
@@ -107,7 +121,11 @@ class CaroServer:
         Lắng nghe ở port 7777, mỗi người vào sẽ gọi handle_client
         """
         server = await asyncio.start_server(self.handle_client, self.host, self.port)
+        
+        # Lấy IP thật của máy để hiển thị
+        local_ip = self.get_local_ip()
         print(f"[INFO] Server listening on {self.host}:{self.port}")
+        print(f"[INFO] LAN IP address: {local_ip}:{self.port}")
         async with server:
             await server.serve_forever()
 
@@ -116,6 +134,7 @@ class CaroServer:
         Xử lý 1 người chơi từ khi vào đến khi thoát
         Flow: Login -> Chơi game -> Disconnect -> Cleanup
         """
+        addr = writer.get_extra_info('peername')
         client_name = None
         try:
             # BƯỚC 1: Đợi người chơi login
@@ -146,7 +165,7 @@ class CaroServer:
             # BƯỚC 2: Đăng ký thành công!
             client_name = name
             self.clients[name] = Client(name, reader, writer)
-            print(f"[INFO] {name} connected")
+            print(f"[INFO] {name} connected from {addr}")
             
             # Gửi danh sách người online cho người mới
             await send_json(writer, {"type": "login_ok", "users": list(self.clients.keys())})
