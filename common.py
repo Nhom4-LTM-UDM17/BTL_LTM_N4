@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import json
+import codecs
 from typing import Any, Dict, Tuple, List, Optional
 
 # ==========================
@@ -16,6 +17,9 @@ DIRS = [(1, 0), (0, 1), (1, 1), (1, -1)]  # 4 hướng kiểm tra: ngang, dọc,
 # GỬI VÀ NHẬN DỮ LIỆU JSON QUA SOCKET
 # ==========================
 
+# Cache UTF-8 decoder để tăng hiệu suất
+_decoder = codecs.getincrementaldecoder('utf-8')()
+
 async def send_json(writer: asyncio.StreamWriter, obj: Dict[str, Any]) -> None:
     """
     Gửi một object Python (dict) sang client/server qua kết nối TCP.
@@ -25,6 +29,9 @@ async def send_json(writer: asyncio.StreamWriter, obj: Dict[str, Any]) -> None:
         writer: StreamWriter để gửi dữ liệu
         obj: Dictionary chứa dữ liệu cần gửi
     """
+    if writer.is_closing():
+        raise ConnectionError("Writer đã đóng")
+    
     try:
         data = json.dumps(obj, ensure_ascii=False) + '\n'
         writer.write(data.encode('utf-8'))
@@ -51,7 +58,10 @@ async def recv_json(reader: asyncio.StreamReader) -> Dict[str, Any]:
     line = await reader.readline()
     if not line:
         raise ConnectionError("Kết nối đã bị đóng")
-    return json.loads(line.decode('utf-8').strip())
+    
+    # Sử dụng cached decoder để tăng hiệu suất
+    text = _decoder.decode(line, final=False).strip()
+    return json.loads(text)
 
 
 # ==========================
