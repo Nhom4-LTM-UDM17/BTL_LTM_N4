@@ -13,44 +13,46 @@ BOARD_SIZE = 15
 # ============================================
 # CÁC HẰNG SỐ - Settings cho UI
 # ============================================
-RESIZE_DEBOUNCE_MS = 50   # Đợi 50ms sau khi resize mới vẽ lại (chống lag)
-UPDATE_QUEUE_MS = 100     # Cứ 100ms check 1 lần có message từ server không
-RECONNECT_DELAY = 2.0     # Đợi 2 giây trước khi reconnect
-
+RESIZE_DEBOUNCE_MS = 100   # Tăng lên 100ms để tránh lag khi resize
+UPDATE_QUEUE_MS = 50       # Giảm xuống 50ms để responsive hơn
+RECONNECT_DELAY = 2.0
+HEARTBEAT_INTERVAL = 5.0   # Ping server mỗi 5s để check connection
 
 class GuiClient:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title('Caro Online')
-        self.root.geometry("1100x700")
-        self.root.config(bg="#1e1e2f")  # Dark theme
+        self.root.title('Caro Online - Enhanced')
+        self.root.geometry("1200x750")
+        self.root.config(bg="#1e1e2f")
 
         # ============================================
         # TRẠNG THÁI MẠNG + GAME
         # ============================================
-        self.queue = Queue()  # Hàng đợi message từ async thread
-        self.reader = None    # Ống đọc data từ server
-        self.writer = None    # Ống ghi data lên server
-        self.loop = None      # Event loop của asyncio
-        self.name = ''        # Tên người chơi
-        self.in_match = False # Đang trong trận không?
-        self.you = None       # Bạn cầm X hay O?
-        self.opponent = None  # Tên đối thủ
-        self.turn = None      # Lượt của ai?
-        self.deadline = None  # Hết giờ lúc nào?
-        self.timer_id = None  # ID của timer đang chạy
-        self.highlighted = [] # Các ô được highlight (line thắng)
-        self.resize_debounce = None  # ID để cancel resize cũ
-        self.is_closing = False  # Đang tắt app không?
+        self.queue = Queue()
+        self.reader = None
+        self.writer = None
+        self.loop = None
+        self.name = ''
+        self.in_match = False
+        self.you = None
+        self.opponent = None
+        self.turn = None
+        self.deadline = None
+        self.timer_id = None
+        self.highlighted = []
+        self.resize_debounce = None
+        self.is_closing = False
+        self.last_move_time = 0  # Track để tránh double-click
 
         # ============================================
         # TRẠNG THÁI BÀN CỜ
         # ============================================
-        # board_state[y][x] = '' | 'X' | 'O'
         self.board_state = [['' for _ in range(BOARD_SIZE)] for _ in range(BOARD_SIZE)]
-        self.cell_size = 0   # Kích thước 1 ô (tính động theo canvas)
-        self.offset_x = 0    # Lề trái để center board
-        self.offset_y = 0    # Lề trên để center board
+        self.cell_size = 0
+        self.offset_x = 0
+        self.offset_y = 0
+        self.board_enabled = False  # Flag để track board state
+        self.last_move = None  # Lưu vị trí (x, y) của nước đi cuối cùng
 
         # ========================================
         # HEADER - Thanh trên cùng
@@ -58,51 +60,63 @@ class GuiClient:
         header = tk.Frame(root, bg="#252539", pady=10)
         header.pack(side='top', fill='x')
         
-        # Input tên
-        tk.Label(header, text='Name:', bg="#252539", fg="white").pack(side='left', padx=5)
+        tk.Label(header, text='Name:', bg="#252539", fg="white", font=("Segoe UI", 10)).pack(side='left', padx=5)
         self.name_var = tk.StringVar(value='Player')
-        tk.Entry(header, textvariable=self.name_var, width=15, bg="#333347", fg="white", insertbackground="white").pack(side='left', padx=5)
+        self.name_entry = tk.Entry(header, textvariable=self.name_var, width=15, bg="#333347", fg="white", insertbackground="white")
+        self.name_entry.pack(side='left', padx=5)
         
-        # Nút Connect/Disconnect
-        self.connect_btn = tk.Button(header, text='Connect', command=self.on_connect, bg="#0078D7", fg="white", relief='flat')
+        self.connect_btn = tk.Button(header, text='Connect', command=self.on_connect, bg="#0078D7", fg="white", relief='flat', padx=15)
         self.connect_btn.pack(side='left', padx=5)
-        self.disconnect_btn = tk.Button(header, text='Disconnect', command=self.on_disconnect, bg="#d9534f", fg="white", relief='flat', state='disabled')
+        self.disconnect_btn = tk.Button(header, text='Disconnect', command=self.on_disconnect, bg="#d9534f", fg="white", relief='flat', state='disabled', padx=15)
         self.disconnect_btn.pack(side='left', padx=5)
+
+        # Connection status indicator
+        self.conn_indicator = tk.Label(header, text="●", fg="#888888", bg="#252539", font=("Arial", 16))
+        self.conn_indicator.pack(side='right', padx=10)
 
         # ========================================
         # INFO BAR - Thanh thông tin
         # ========================================
-        info_bar = tk.Frame(root, bg="#1e1e2f", height=30)
+        info_bar = tk.Frame(root, bg="#1e1e2f", height=35)
         info_bar.pack(side='top', fill='x', pady=(0, 5))
         info_bar.pack_propagate(False)
 
-        # Status text (trái)
         self.status_var = tk.StringVar(value='Not connected')
         self.status_label = tk.Label(info_bar, textvariable=self.status_var, bg="#1e1e2f",
-                                     fg="#FFD700", font=("Segoe UI", 10, "italic"), anchor='w')
+                                     fg="#FFD700", font=("Segoe UI", 11, "italic"), anchor='w')
         self.status_label.pack(side='left', padx=15, fill='x', expand=True)
 
-        # Timer (phải)
         self.timer_var = tk.StringVar(value='')
         self.timer_label = tk.Label(info_bar, textvariable=self.timer_var,
-                                    bg="#1e1e2f", fg="#00FFAA", font=("Consolas", 12, "bold"))
+                                    bg="#1e1e2f", fg="#00FFAA", font=("Consolas", 13, "bold"))
         self.timer_label.pack(side='right', padx=20)
 
         # ========================================
         # LEFT PANEL - Danh sách người chơi
         # ========================================
-        left_panel = tk.Frame(root, bg="#2b2b3c", width=180)
-        left_panel.pack(side='left', fill='y')
+        left_panel = tk.Frame(root, bg="#2b2b3c", width=200)
+        left_panel.pack(side='left', fill='y', padx=(5, 0))
         
-        tk.Label(left_panel, text='Online Users', bg="#2b2b3c", fg="#00FFAA", font=("Segoe UI", 12, "bold")).pack(pady=10)
+        tk.Label(left_panel, text='Online Users', bg="#2b2b3c", fg="#00FFAA", 
+                font=("Segoe UI", 12, "bold")).pack(pady=10)
         
-        # Listbox hiển thị người online
-        self.users_listbox = tk.Listbox(left_panel, height=15, bg="#1e1e2f", fg="white", selectbackground="#00FFAA", relief='flat')
-        self.users_listbox.pack(fill='y', padx=8)
+        # Frame chứa listbox + scrollbar
+        list_frame = tk.Frame(left_panel, bg="#2b2b3c")
+        list_frame.pack(fill='both', expand=True, padx=8, pady=(0, 10))
         
-        # Nút thách đấu
-        self.challenge_btn = tk.Button(left_panel, text='Challenge', command=self.on_challenge, bg="#00b894", fg="white", relief='flat', state='disabled')
-        self.challenge_btn.pack(pady=10)
+        scrollbar = tk.Scrollbar(list_frame)
+        scrollbar.pack(side='right', fill='y')
+        
+        self.users_listbox = tk.Listbox(list_frame, height=20, bg="#1e1e2f", fg="white", 
+                                        selectbackground="#00FFAA", selectforeground="black",
+                                        relief='flat', yscrollcommand=scrollbar.set)
+        self.users_listbox.pack(side='left', fill='both', expand=True)
+        scrollbar.config(command=self.users_listbox.yview)
+        
+        self.challenge_btn = tk.Button(left_panel, text='Challenge Selected', command=self.on_challenge, 
+                                       bg="#00b894", fg="white", relief='flat', state='disabled', 
+                                       font=("Segoe UI", 10, "bold"), pady=8)
+        self.challenge_btn.pack(pady=10, padx=10, fill='x')
 
         # ========================================
         # CENTER - Bàn cờ
@@ -110,228 +124,226 @@ class GuiClient:
         center_frame = tk.Frame(root, bg="#1e1e2f")
         center_frame.pack(side='left', expand=True, fill='both', padx=10, pady=(0, 10))
 
-        # Canvas để vẽ bàn cờ
         self.canvas = tk.Canvas(center_frame, bg="#1e1e2f", highlightthickness=0)
         self.canvas.pack(expand=True, fill='both')
-
-        # Bind sự kiện resize
         self.canvas.bind('<Configure>', self.on_canvas_configure)
-        self.root.after(200, self.on_canvas_resize)
+        
+        # Bind click trực tiếp vào canvas
+        self.canvas.bind('<Button-1>', self.on_canvas_click)
 
         # ========================================
         # RIGHT PANEL - Chat box
         # ========================================
-        right_panel = tk.Frame(root, bg="#2b2b3c", width=250)
-        right_panel.pack(side='right', fill='y')
+        right_panel = tk.Frame(root, bg="#2b2b3c", width=280)
+        right_panel.pack(side='right', fill='y', padx=(0, 5))
         
-        tk.Label(right_panel, text='Chat', bg="#2b2b3c", fg="#FFD700", font=("Segoe UI", 12, "bold")).pack(pady=5)
+        tk.Label(right_panel, text='Chat', bg="#2b2b3c", fg="#FFD700", 
+                font=("Segoe UI", 12, "bold")).pack(pady=8)
 
-        # ScrolledText để hiển thị chat
-        self.chat_area = scrolledtext.ScrolledText(right_panel, width=30, height=25, bg="#1e1e2f", fg="white", wrap='word', state='disabled')
+        self.chat_area = scrolledtext.ScrolledText(right_panel, width=32, height=30, 
+                                                   bg="#1e1e2f", fg="white", wrap='word', 
+                                                   state='disabled', relief='flat')
         self.chat_area.pack(padx=10, pady=5, fill='both', expand=True)
 
-        # Configure tags cho màu chữ
-        self.chat_area.tag_config("you", foreground="#00FFAA")      # Tin nhắn của bạn = xanh lá
-        self.chat_area.tag_config("system", foreground="#FFD700", font=("Segoe UI", 9, "italic"))  # System = vàng
+        self.chat_area.tag_config("you", foreground="#00FFAA", font=("Segoe UI", 9, "bold"))
+        self.chat_area.tag_config("opponent", foreground="#FF6B6B", font=("Segoe UI", 9, "bold"))
+        self.chat_area.tag_config("system", foreground="#FFD700", font=("Segoe UI", 9, "italic"))
 
-        # Input chat
         chat_entry_frame = tk.Frame(right_panel, bg="#2b2b3c")
-        chat_entry_frame.pack(fill='x', padx=10, pady=5)
-        self.chat_entry = tk.Entry(chat_entry_frame, bg="#333347", fg="white", relief='flat')
+        chat_entry_frame.pack(fill='x', padx=10, pady=(0, 10))
+        self.chat_entry = tk.Entry(chat_entry_frame, bg="#333347", fg="white", 
+                                   relief='flat', font=("Segoe UI", 9))
         self.chat_entry.pack(side='left', fill='x', expand=True, padx=(0, 5))
-        self.chat_entry.bind('<Return>', self.on_send_chat)  # Enter để gửi
-        tk.Button(chat_entry_frame, text='Send', command=self.on_send_chat, bg="#00AEEF", fg="white", relief='flat').pack(side='right')
+        self.chat_entry.bind('<Return>', self.on_send_chat)
+        tk.Button(chat_entry_frame, text='Send', command=self.on_send_chat, 
+                 bg="#00AEEF", fg="white", relief='flat', padx=10).pack(side='right')
 
+        # Vẽ board lần đầu
+        self.root.after(200, self.on_canvas_resize)
+        
         # Bắt đầu vòng lặp xử lý queue
         self.root.after(UPDATE_QUEUE_MS, self.process_queue)
 
     # =====================================
-    # VẼ BÀN CỜ 3D - Phần visual đẹp mắt
+    # VẼ BÀN CỜ 3D
     # =====================================
     
     def on_canvas_configure(self, event=None):
-        """
-        Khi canvas bị resize (cửa sổ to/nhỏ)
-        Dùng debounce để không vẽ lại liên tục (gây lag)
-        """
+        """Debounce resize để tránh lag"""
         if self.resize_debounce:
-            self.root.after_cancel(self.resize_debounce)  # Hủy lệnh vẽ cũ
-        # Đợi 50ms nữa mới vẽ (nếu resize tiếp thì lại đợi)
+            self.root.after_cancel(self.resize_debounce)
         self.resize_debounce = self.root.after(RESIZE_DEBOUNCE_MS, self.on_canvas_resize)
 
     def on_canvas_resize(self):
-        """
-        Vẽ lại toàn bộ bàn cờ khi resize
-        Tính toán cell_size và offset để center board
-        """
+        """Vẽ lại toàn bộ bàn cờ"""
         width = self.canvas.winfo_width()
         height = self.canvas.winfo_height()
         if width <= 1 or height <= 1:
             return
 
-        # Cell size = min(width, height) / 15
-        self.cell_size = min(width, height) // BOARD_SIZE
-        self.canvas.delete('all')  # Xóa tất cả
-
-        # Tính offset để center board
-        self.offset_x = (width - self.cell_size * BOARD_SIZE) // 2
-        self.offset_y = (height - self.cell_size * BOARD_SIZE) // 2
-
-        # Vẽ lưới 15x15
-        for y in range(BOARD_SIZE):
-            for x in range(BOARD_SIZE):
-                x1 = self.offset_x + x * self.cell_size
-                y1 = self.offset_y + y * self.cell_size
-                x2 = x1 + self.cell_size
-                y2 = y1 + self.cell_size
-                self.canvas.create_rectangle(x1, y1, x2, y2, outline="#3a3a50", width=1, fill="")
-
-        # Vẽ lại các quân cờ từ state
-        self.redraw_board_from_state()
-
-    def draw_3d_cell(self, x, y, base_color="#2b2b3c", symbol='', text_color="#FFFFFF"):
-        """
-        Vẽ 1 ô với hiệu ứng 3D
-        - Shadow: bóng đổ phía dưới-phải
-        - Light edges: viền sáng phía trên-trái
-        - Symbol: X hoặc O với shadow
-        """
+        # Tính cell size với padding
+        padding = 40
+        available_width = width - padding * 2
+        available_height = height - padding * 2
+        self.cell_size = min(available_width, available_height) // BOARD_SIZE
+        
         if self.cell_size < 10:
             return
 
-        # Tính tọa độ ô
+        self.canvas.delete('all')
+
+        # Tính offset để center
+        board_width = self.cell_size * BOARD_SIZE
+        board_height = self.cell_size * BOARD_SIZE
+        self.offset_x = (width - board_width) // 2
+        self.offset_y = (height - board_height) // 2
+
+        # Vẽ background cho board
+        self.canvas.create_rectangle(
+            self.offset_x - 10, self.offset_y - 10,
+            self.offset_x + board_width + 10, self.offset_y + board_height + 10,
+            fill="#252539", outline="#3a3a50", width=2
+        )
+
+        # Vẽ lưới
+        for i in range(BOARD_SIZE + 1):
+            # Vertical lines
+            x = self.offset_x + i * self.cell_size
+            self.canvas.create_line(x, self.offset_y, x, self.offset_y + board_height,
+                                   fill="#3a3a50", width=1)
+            # Horizontal lines
+            y = self.offset_y + i * self.cell_size
+            self.canvas.create_line(self.offset_x, y, self.offset_x + board_width, y,
+                                   fill="#3a3a50", width=1)
+
+        # Vẽ các điểm đánh dấu (star points)
+        star_points = [(3, 3), (3, 11), (7, 7), (11, 3), (11, 11)]
+        for sx, sy in star_points:
+            cx = self.offset_x + sx * self.cell_size + self.cell_size // 2
+            cy = self.offset_y + sy * self.cell_size + self.cell_size // 2
+            r = max(3, self.cell_size // 15)
+            self.canvas.create_oval(cx - r, cy - r, cx + r, cy + r, 
+                                   fill="#5a5a70", outline="")
+
+        # Vẽ lại các quân cờ
+        self.redraw_board_from_state()
+
+    def draw_3d_cell(self, x, y, base_color="#2b2b3c", symbol='', text_color="#FFFFFF"):
+        """Vẽ 1 ô với hiệu ứng 3D"""
+        if self.cell_size < 10:
+            return
+
         x1 = self.offset_x + x * self.cell_size
         y1 = self.offset_y + y * self.cell_size
         x2 = x1 + self.cell_size
         y2 = y1 + self.cell_size
 
-        # Tính offset cho hiệu ứng 3D
-        shadow_offset = max(2, self.cell_size // 15)
-        light_offset = max(1, self.cell_size // 20)
+        cx = (x1 + x2) // 2
+        cy = (y1 + y2) // 2
 
-        tag = f"cell_3d_{x}_{y}"
+        tag = f"cell_{x}_{y}"
         self.canvas.delete(tag)
 
-        # 1. Vẽ bóng đổ (shadow)
-        self.canvas.create_rectangle(
-            x1 + shadow_offset, y1 + shadow_offset, x2 + shadow_offset, y2 + shadow_offset,
-            fill="#1a1a2e", outline="", tags=tag
-        )
-
-        # 2. Vẽ ô chính
-        self.canvas.create_rectangle(
-            x1, y1, x2, y2,
-            fill=base_color, outline="", tags=tag
-        )
-
-        # 3. Vẽ viền sáng (light edges) - TOP + LEFT
-        self.canvas.create_polygon(
-            x1, y1, x1 + light_offset, y1 + light_offset,
-            x2 - light_offset, y1 + light_offset, x2, y1,
-            fill="#4a4a60", outline="", tags=tag
-        )
-        self.canvas.create_polygon(
-            x1, y1, x1 + light_offset, y1 + light_offset,
-            x1 + light_offset, y2 - light_offset, x1, y2,
-            fill="#4a4a60", outline="", tags=tag
-        )
-
-        # 4. Vẽ symbol (X hoặc O) với shadow
         if symbol:
-            center_x = (x1 + x2) // 2
-            center_y = (y1 + y2) // 2
-            font_size = max(14, self.cell_size // 3)
+            # Vẽ quân cờ dạng hình tròn với gradient effect
+            radius = int(self.cell_size * 0.35)
+            shadow_offset = max(2, radius // 10)
 
-            # Shadow của text
+            # Shadow
+            self.canvas.create_oval(
+                cx - radius + shadow_offset, cy - radius + shadow_offset,
+                cx + radius + shadow_offset, cy + radius + shadow_offset,
+                fill="#000000", outline="", tags=tag
+            )
+
+            # Main circle
+            self.canvas.create_oval(
+                cx - radius, cy - radius, cx + radius, cy + radius,
+                fill=base_color, outline="", tags=tag
+            )
+
+            # Symbol text
+            font_size = max(12, int(self.cell_size * 0.4))
             self.canvas.create_text(
-                center_x + 1, center_y + 1,
+                cx + 1, cy + 1,
                 text=symbol, font=("Consolas", font_size, "bold"),
                 fill="#000000", tags=tag
             )
-            # Text chính
             self.canvas.create_text(
-                center_x, center_y,
+                cx, cy,
                 text=symbol, font=("Consolas", font_size, "bold"),
                 fill=text_color, tags=tag
             )
 
-        # 5. Bind click cho ô trống (để đánh)
-        if not symbol:
-            self.canvas.tag_bind(tag, '<Button-1>', lambda e, xx=x, yy=y: self.on_cell(xx, yy))
-
     def redraw_board_from_state(self):
-        """
-        Vẽ lại toàn bộ board từ self.board_state
-        Dùng khi resize hoặc cần refresh UI
-        """
+        """Vẽ lại toàn bộ board từ state"""
         for y in range(BOARD_SIZE):
             for x in range(BOARD_SIZE):
                 symbol = self.board_state[y][x]
-                base_color = "#2b2b3c"  # Màu nền mặc định
-                text_color = "#FFFFFF"
-
-                # Ô có X -> nền xanh dương
                 if symbol == "X":
-                    base_color = "#0078D7"
-                # Ô có O -> nền đỏ
+                    self.draw_3d_cell(x, y, "#FF3B30", "X", "#FFFFFF")
                 elif symbol == "O":
-                    base_color = "#FF3B30"
+                    self.draw_3d_cell(x, y, "#0078D7", "O", "#FFFFFF")
 
-                self.draw_3d_cell(x, y, base_color, symbol, text_color)
-
-        # Vẽ highlight (line thắng) nếu có
         self.draw_highlights()
 
     def draw_highlights(self):
-        """
-        Vẽ viền vàng cho các ô trong line thắng
-        2 layer: outer (vàng) + inner (trắng)
-        """
+        """Vẽ highlight cho nước đi cuối cùng và line thắng"""
         self.canvas.delete("highlight")
-        if not self.highlighted:
-            return
+        
+        # Highlight nước đi cuối cùng (nếu có)
+        if self.last_move:
+            x, y = self.last_move
+            if 0 <= x < BOARD_SIZE and 0 <= y < BOARD_SIZE:
+                x1 = self.offset_x + x * self.cell_size
+                y1 = self.offset_y + y * self.cell_size
+                x2 = x1 + self.cell_size
+                y2 = y1 + self.cell_size
+                
+                # Cyan highlight cho nước đi cuối cùng
+                for i in range(2):
+                    offset = 2 + i * 2
+                    width = 3 - i
+                    self.canvas.create_rectangle(
+                        x1 - offset, y1 - offset, x2 + offset, y2 + offset,
+                        outline="#00FFFF", width=width, tags="highlight"
+                    )
+        
+        # Highlight line thắng (nếu có)
+        if self.highlighted:
+            for (x, y) in self.highlighted:
+                if not (0 <= x < BOARD_SIZE and 0 <= y < BOARD_SIZE):
+                    continue
+                
+                x1 = self.offset_x + x * self.cell_size
+                y1 = self.offset_y + y * self.cell_size
+                x2 = x1 + self.cell_size
+                y2 = y1 + self.cell_size
 
-        for (x, y) in self.highlighted:
-            if not (0 <= x < BOARD_SIZE and 0 <= y < BOARD_SIZE):
-                continue
-            
-            x1 = self.offset_x + x * self.cell_size
-            y1 = self.offset_y + y * self.cell_size
-            x2 = x1 + self.cell_size
-            y2 = y1 + self.cell_size
-
-            # Viền ngoài màu vàng
-            outer = self.canvas.create_rectangle(
-                x1 - 4, y1 - 4, x2 + 4, y2 + 4,
-                outline="#FFD700", width=5, tags="highlight"
-            )
-            # Viền trong màu trắng
-            inner = self.canvas.create_rectangle(
-                x1 - 2, y1 - 2, x2 + 2, y2 + 2,
-                outline="#FFFFFF", width=2, tags="highlight"
-            )
-            # Đưa lên trên cùng
-            self.canvas.tag_raise(outer)
-            self.canvas.tag_raise(inner)
+                # Gold glow effect cho line thắng
+                for i in range(3):
+                    offset = 3 + i * 2
+                    width = 4 - i
+                    self.canvas.create_rectangle(
+                        x1 - offset, y1 - offset, x2 + offset, y2 + offset,
+                        outline="#FFD700", width=width, tags="highlight"
+                    )
 
     def set_cell(self, x, y, symbol):
-        """
-        Đặt quân cờ vào ô (x, y)
-        Cập nhật state + vẽ lại ô đó
-        """
+        """Đặt quân cờ vào ô"""
         if not (0 <= x < BOARD_SIZE and 0 <= y < BOARD_SIZE):
             return
         
         self.board_state[y][x] = symbol
-        base_color = "#0078D7" if symbol == "X" else "#FF3B30"
+        base_color = "#FF3B30" if symbol == "X" else "#0078D7"
         self.draw_3d_cell(x, y, base_color, symbol, "#FFFFFF")
         self.draw_highlights()
 
     def clear_board(self):
-        """Xóa sạch bàn cờ - reset về trạng thái ban đầu"""
+        """Xóa sạch bàn cờ"""
         self.board_state = [['' for _ in range(BOARD_SIZE)] for _ in range(BOARD_SIZE)]
         self.highlighted = []
-        self.canvas.delete('all')
+        self.last_move = None
         if self.cell_size > 0:
             self.on_canvas_resize()
 
@@ -341,47 +353,59 @@ class GuiClient:
         self.redraw_board_from_state()
 
     def enable_board(self):
-        """
-        Bật tương tác với board (đến lượt bạn)
-        Bind click cho tất cả ô trống
-        """
-        if not self.in_match or self.you != self.turn:
-            return
-        
-        for y in range(BOARD_SIZE):
-            for x in range(BOARD_SIZE):
-                if not self.board_state[y][x]:
-                    tag = f"cell_3d_{x}_{y}"
-                    self.canvas.tag_bind(tag, '<Button-1>', lambda e, xx=x, yy=y: self.on_cell(xx, yy))
+        """Bật tương tác với board"""
+        self.board_enabled = True
+        self.canvas.config(cursor="hand2")
 
     def disable_board(self):
-        """
-        Tắt tương tác (không phải lượt bạn)
-        Unbind tất cả click
-        """
-        for y in range(BOARD_SIZE):
-            for x in range(BOARD_SIZE):
-                if not self.board_state[y][x]:
-                    tag = f"cell_3d_{x}_{y}"
-                    try:
-                        self.canvas.tag_unbind(tag, '<Button-1>')
-                    except:
-                        pass
+        """Tắt tương tác"""
+        self.board_enabled = False
+        self.canvas.config(cursor="")
+
+    def on_canvas_click(self, event):
+        """Xử lý click vào canvas"""
+        # Check conditions
+        if not self.board_enabled or not self.in_match or self.you != self.turn:
+            return
+
+        # Debounce double-click
+        now = time.time()
+        if now - self.last_move_time < 0.3:
+            return
+        self.last_move_time = now
+
+        # Convert pixel to board coordinates
+        if self.cell_size <= 0:
+            return
+
+        x = (event.x - self.offset_x) // self.cell_size
+        y = (event.y - self.offset_y) // self.cell_size
+
+        # Validate coordinates
+        if not (0 <= x < BOARD_SIZE and 0 <= y < BOARD_SIZE):
+            return
+
+        # Check if cell is empty
+        if self.board_state[y][x]:
+            self.append_chat("That cell is occupied!\n", "system")
+            return
+
+        # Send move
+        self.disable_board()
+        self.send_json({'type': 'move', 'x': x, 'y': y})
+        self.append_chat(f'Playing at ({x}, {y})...\n', "you")
 
     # =====================================
     # MẠNG - Kết nối với server
     # =====================================
     
     def on_connect(self):
-        """
-        Người dùng nhấn nút Connect
-        Validate tên -> Tạo thread mới chạy asyncio
-        """
+        """Người dùng nhấn Connect"""
         if self.writer:
             messagebox.showinfo('Info', 'Already connected')
             return
         
-        # Validate tên (1-50 ký tự)
+        # Validate tên
         self.name = self.name_var.get().strip()
         if not self.name:
             self.name = "Player"
@@ -390,36 +414,31 @@ class GuiClient:
             messagebox.showerror('Error', 'Name too long (max 50 characters)')
             return
         
-        # Đổi UI
+        # Disable name entry
+        self.name_entry.config(state='disabled')
+        
         self.set_status('Connecting...')
         self.connect_btn['state'] = 'disabled'
         
-        # Tạo thread chạy asyncio (không block UI)
+        # Start async thread
         threading.Thread(target=self.start_async_loop, daemon=True).start()
 
     def on_disconnect(self):
-        """
-        Người dùng nhấn Disconnect
-        Đánh dấu is_closing -> đóng connection
-        """
+        """Người dùng nhấn Disconnect"""
         if not self.writer:
             return
         self.set_status('Disconnecting...')
-        self.is_closing = True  # Đánh dấu disconnect chủ động
+        self.is_closing = True
         if self.loop:
-            # Gọi _close_connection trong event loop
             self.loop.call_soon_threadsafe(self._close_connection)
 
     def _close_connection(self):
-        """Đóng connection (gọi từ event loop)"""
+        """Đóng connection"""
         if self.writer and not self.writer.is_closing():
             self.writer.close()
 
     def on_challenge(self):
-        """
-        Người dùng nhấn Challenge
-        Lấy người được chọn trong listbox -> gửi lời thách
-        """
+        """Người dùng nhấn Challenge"""
         sel = self.users_listbox.curselection()
         if not sel:
             messagebox.showinfo('Info', 'Select a user to challenge')
@@ -430,95 +449,56 @@ class GuiClient:
             messagebox.showinfo('Info', 'Cannot challenge yourself')
             return
         
-        # Disable button để tránh spam
         self.challenge_btn['state'] = 'disabled'
         self.send_json({'type': 'challenge', 'opponent': opponent})
         self.append_chat(f'Challenge sent to {opponent}...\n', "system")
 
-    def on_cell(self, x, y):
-        """
-        Người dùng click vào ô (x, y)
-        Kiểm tra hợp lệ -> gửi move lên server
-        """
-        # Kiểm tra điều kiện
-        if not self.in_match or self.you != self.turn:
-            return
-        if self.board_state[y][x]:  # Ô đã có quân
-            return
-        
-        # Disable board (chờ server xác nhận)
-        self.disable_board()
-        # Gửi move
-        self.send_json({'type': 'move', 'x': x, 'y': y})
-
     def on_send_chat(self, event=None):
-        """
-        Người dùng gửi chat (Enter hoặc click Send)
-        """
+        """Người dùng gửi chat"""
         text = self.chat_entry.get().strip()
         if not text:
             return
         
-        # Max 500 ký tự
         if len(text) > 500:
             messagebox.showwarning('Warning', 'Message too long (max 500 characters)')
             return
         
-        # Gửi lên server (nếu đang trong trận)
         if self.in_match:
             self.send_json({'type': 'chat', 'text': text})
             self.append_chat(f'You: {text}\n', "you")
         else:
-            self.append_chat(f'(Not in match) You: {text}\n', "system")
+            self.append_chat(f'(Not in match) {text}\n', "system")
         
-        # Clear input
         self.chat_entry.delete(0, tk.END)
 
     def start_async_loop(self):
-        """
-        Chạy trong thread riêng
-        Tạo event loop mới -> connect server -> vòng lặp nhận message
-        """
+        """Chạy trong thread riêng"""
         try:
-            # Tạo event loop mới cho thread này
             self.loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
-            # Chạy async_main (connect + receive loop)
             self.loop.run_until_complete(self.async_main())
         except Exception as e:
             print(f"[ERROR] Async loop error: {e}")
             if not self.is_closing:
-                # Báo UI disconnect (qua queue)
                 self.queue.put((self.handle_disconnect, ()))
         finally:
-            # Cleanup: cancel tất cả task đang chạy
             if self.loop:
                 pending = asyncio.all_tasks(self.loop)
                 for task in pending:
                     task.cancel()
-                
                 if pending:
                     self.loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-                
                 self.loop.close()
-            
-            # Reset state
             self.loop = None
             self.writer = None
             self.reader = None
 
     async def async_main(self):
-        """
-        Hàm chính của async thread
-        1. Connect đến server
-        2. Gửi login
-        3. Vòng lặp nhận message
-        """
+        """Hàm chính của async thread"""
         try:
-            # Kết nối TCP
             self.reader, self.writer = await asyncio.open_connection(HOST, PORT)
+            self.queue.put((self.update_connection_indicator, (True,)))
         except Exception as e:
-            # Connect thất bại
             self.queue.put((self.set_status, (f'Connect failed: {e}',)))
             self.queue.put((self.handle_disconnect, ()))
             return
@@ -527,15 +507,12 @@ class GuiClient:
         await self.send_json_async({'type': 'login', 'name': self.name})
 
         try:
-            # Vòng lặp nhận message
             while True:
-                line = await self.reader.readline()  # Đọc 1 dòng
-                if not line:  # Server đóng connection
+                line = await self.reader.readline()
+                if not line:
                     break
                 
-                # Parse JSON
                 msg = json.loads(line.decode('utf-8').strip())
-                # Đẩy vào queue để main thread xử lý
                 self.queue.put((self.handle_msg, (msg,)))
                 
         except asyncio.CancelledError:
@@ -544,7 +521,6 @@ class GuiClient:
             if not self.is_closing:
                 print(f"[ERROR] Connection error: {e}")
         finally:
-            # Cleanup
             self.queue.put((self.handle_disconnect, ()))
             if self.writer:
                 try:
@@ -556,124 +532,96 @@ class GuiClient:
             self.reader = None
 
     async def send_json_async(self, obj):
-        """
-        Gửi JSON lên server (trong async context)
-        Format: JSON + newline
-        """
+        """Gửi JSON lên server"""
         if not self.writer or self.writer.is_closing():
             return
         try:
             data = json.dumps(obj, ensure_ascii=False) + '\n'
             self.writer.write(data.encode('utf-8'))
-            await self.writer.drain()  # Đợi gửi xong
+            await self.writer.drain()
         except Exception as e:
             print(f"[ERROR] Send failed: {e}")
 
     def send_json(self, obj):
-        """
-        Gửi JSON từ main thread
-        Dùng run_coroutine_threadsafe để gọi async function từ thread khác
-        """
+        """Gửi JSON từ main thread"""
         if not self.writer or not self.loop:
-            messagebox.showinfo('Info', 'Not connected')
             return
         if self.writer.is_closing():
-            messagebox.showinfo('Info', 'Connection is closing')
             return
-        
-        # Schedule coroutine trong event loop
         asyncio.run_coroutine_threadsafe(self.send_json_async(obj), self.loop)
 
     # =====================================
-    # UI HELPERS - Cập nhật giao diện
+    # UI HELPERS
     # =====================================
     
     def process_queue(self):
-        """
-        Chạy định kỳ (100ms)
-        Lấy message từ queue -> gọi handler tương ứng
-        
-        PATTERN:
-        - Async thread: queue.put((function, args))
-        - Main thread: lấy ra và gọi function(*args)
-        """
+        """Xử lý queue message từ async thread"""
         try:
             while True:
-                fn, args = self.queue.get_nowait()  # Không block
-                fn(*args)  # Gọi handler
+                fn, args = self.queue.get_nowait()
+                fn(*args)
         except Empty:
             pass
-        # Schedule lại sau 100ms
         self.root.after(UPDATE_QUEUE_MS, self.process_queue)
 
     def set_status(self, text):
         """Cập nhật status label"""
         self.status_var.set(text)
 
+    def update_connection_indicator(self, connected):
+        """Cập nhật indicator kết nối"""
+        if connected:
+            self.conn_indicator.config(fg="#00FF00")  # Green
+        else:
+            self.conn_indicator.config(fg="#888888")  # Gray
+
     def append_chat(self, text, tag=None):
-        """
-        Thêm text vào chat area
-        tag: "you" | "system" | None (để tô màu)
-        """
-        self.chat_area.config(state='normal')  # Enable edit
+        """Thêm text vào chat area"""
+        self.chat_area.config(state='normal')
         if tag:
             self.chat_area.insert(tk.END, text, (tag,))
         else:
             self.chat_area.insert(tk.END, text)
-        self.chat_area.config(state='disabled')  # Disable edit
-        self.chat_area.see(tk.END)  # Scroll xuống cuối
+        self.chat_area.config(state='disabled')
+        self.chat_area.see(tk.END)
 
     # =====================================
-    # COUNTDOWN TIMER - Đồng hồ đếm ngược
+    # COUNTDOWN TIMER
     # =====================================
     
     def start_countdown(self, deadline):
-        """
-        Bắt đầu đếm ngược đến deadline
-        deadline: timestamp (giây)
-        """
+        """Bắt đầu đếm ngược"""
         if not deadline:
             return
         self.deadline = deadline
         self.update_timer()
 
     def update_timer(self):
-        """
-        Cập nhật timer mỗi giây
-        Còn > 5s: xanh lá
-        Còn <= 5s: đỏ (cảnh báo)
-        Hết giờ: gửi timeout lên server
-        """
+        """Cập nhật timer mỗi giây"""
         if not self.deadline:
             self.timer_var.set('')
             return
 
         remaining = int(self.deadline - time.time())
         if remaining > 0:
-            # Còn thời gian
             if remaining <= 5:
-                self.timer_label.config(fg="#FF3B30")  # Đỏ
+                self.timer_label.config(fg="#FF3B30")
+            elif remaining <= 10:
+                self.timer_label.config(fg="#FFA500")
             else:
-                self.timer_label.config(fg="#00FFAA")  # Xanh
+                self.timer_label.config(fg="#00FFAA")
             
-            self.timer_var.set(f"{remaining}s left")
-            # Schedule lại sau 1 giây
+            self.timer_var.set(f"⏱ {remaining}s")
             self.timer_id = self.root.after(1000, self.update_timer)
         else:
-            # HẾT GIỜ!
-            self.timer_var.set("Time's up!")
+            self.timer_var.set("⏱ Time's up!")
             self.timer_label.config(fg="#FF3B30")
             self.stop_countdown()
-            
-            # Thông báo và gửi timeout lên server
-            self.append_chat("Your time expired!\n", "system")
-            self.set_status("You lost (timeout)")
+            self.append_chat("⚠️ Your time expired!\n", "system")
             self.send_json({'type': 'timeout'})
 
     def stop_countdown(self):
-        """
-        Dừng timer (khi đã đi nước hoặc hết trận)
-        """
+        """Dừng timer"""
         if self.timer_id:
             self.root.after_cancel(self.timer_id)
             self.timer_id = None
@@ -686,14 +634,13 @@ class GuiClient:
     # =====================================
     
     def handle_disconnect(self):
-        """
-        Xử lý khi disconnect
-        Reset tất cả state về ban đầu
-        """
-        self.set_status('Disconnected')
+        """Xử lý khi disconnect"""
+        self.set_status('❌ Disconnected')
+        self.update_connection_indicator(False)
         self.connect_btn['state'] = 'normal'
         self.disconnect_btn['state'] = 'disabled'
         self.challenge_btn['state'] = 'disabled'
+        self.name_entry.config(state='normal')
         self.users_listbox.delete(0, tk.END)
         self.clear_board()
         self.disable_board()
@@ -703,131 +650,147 @@ class GuiClient:
         self.is_closing = False
 
     def handle_msg(self, msg):
-        """
-        XỬ LÝ TẤT CẢ MESSAGE TỪ SERVER
-        Đây là "bộ não" của client - routing message đến handler phù hợp
-        """
+        """XỬ LÝ TẤT CẢ MESSAGE TỪ SERVER"""
         t = msg.get('type')
         
-        # ========================================
-        # LOGIN THÀNH CÔNG
-        # ========================================
         if t == 'login_ok':
-            self.set_status(f'Connected as {self.name}')
+            self.set_status(f'✅ Connected as {self.name}')
             self.connect_btn['state'] = 'disabled'
             self.disconnect_btn['state'] = 'normal'
             self.challenge_btn['state'] = 'normal'
-            # Cập nhật danh sách người online
             self.update_users(msg.get('users', []))
-            self.append_chat('=== Connected to server ===\n', "system")
+            self.append_chat('╔════════════════════════╗\n', "system")
+            self.append_chat('║  Connected to server  ║\n', "system")
+            self.append_chat('╚════════════════════════╝\n', "system")
 
-        # ========================================
-        # CẬP NHẬT DANH SÁCH NGƯỜI ONLINE
-        # ========================================
         elif t == 'user_list':
             self.update_users(msg.get('users', []))
 
-        # ========================================
-        # ĐÃ GỬI LỜI THÁCH (feedback)
-        # ========================================
         elif t == 'challenge_sent':
             to = msg.get('to')
-            self.append_chat(f'Waiting for {to} to accept...\n', "system")
+            self.append_chat(f'⏳ Waiting for {to} to accept...\n', "system")
             self.challenge_btn['state'] = 'normal'
 
-        # ========================================
-        # NHẬN LỜI THÁCH TỪ AI ĐÓ
-        # ========================================
         elif t == 'invite':
             frm = msg.get('from')
-            # Hiện popup hỏi có chấp nhận không
-            if messagebox.askyesno('Challenge', f'{frm} challenges you to a match!\n\nAccept?'):
-                # Chấp nhận -> gửi accept
+            if messagebox.askyesno('Challenge Request', 
+                                   f'🎮 {frm} challenges you!\n\nAccept the challenge?'):
                 self.send_json({'type': 'accept', 'opponent': frm})
+                self.append_chat(f'✅ Accepted challenge from {frm}\n', "system")
             else:
-                # Từ chối
-                self.append_chat(f'Declined challenge from {frm}\n', "system")
+                self.append_chat(f'❌ Declined challenge from {frm}\n', "system")
 
-        # ========================================
-        # TRẬN ĐẤU BẮT ĐẦU
-        # ========================================
         elif t == 'match_start':
             self.in_match = True
-            self.you = msg.get('you')  # X hoặc O
+            self.you = msg.get('you')
             self.opponent = msg.get('opponent')
             self.turn = None
             self.clear_board()
             self.disable_board()
-            self.set_status(f'Playing vs {self.opponent} (You: {self.you})')
+            self.set_status(f'⚔️ Playing vs {self.opponent} (You: {self.you})')
             
-            # Thông báo trong chat
             opp_symbol = "O" if self.you == "X" else "X"
-            self.append_chat(f'\n=== Match Started: You ({self.you}) vs {self.opponent} ({opp_symbol}) ===\n', "system")
+            self.append_chat('\n╔════════════════════════╗\n', "system")
+            self.append_chat(f'║   MATCH STARTED!      ║\n', "system")
+            self.append_chat('╚════════════════════════╝\n', "system")
+            self.append_chat(f'You ({self.you}) vs {self.opponent} ({opp_symbol})\n', "system")
             
-            # Resize board (phòng trường hợp board bị lỗi)
             self.root.after(100, self.on_canvas_resize)
 
-        # ========================================
-        # ĐẾN LƯỢT BẠN
-        # ========================================
         elif t == 'your_turn':
             self.turn = self.you
             deadline = msg.get('deadline')
             if deadline:
-                self.start_countdown(deadline)  # Bật timer
-            self.enable_board()  # Cho phép click
-            self.set_status("Your turn!")
-            self.append_chat('Your turn!\n', "system")
+                self.start_countdown(deadline)
+            self.enable_board()
+            self.set_status(f"🎯 Your turn! ({self.you})")
+            self.append_chat('▶️ Your turn!\n', "system")
 
-        # ========================================
-        # ĐỐI THỦ ĐI NƯỚC hoặc NƯỚC CỦA BẠN ĐÃ OK
-        # ========================================
         elif t == 'opponent_move' or t == 'move_ok':
             x, y, sym = msg.get('x'), msg.get('y'), msg.get('symbol')
-            self.set_cell(x, y, sym)  # Vẽ quân cờ
+            
+            # Validate coordinates từ server
+            if x is None or y is None or sym is None:
+                print(f"[ERROR] Invalid move data: {msg}")
+                return
+            
+            try:
+                x, y = int(x), int(y)
+                if not (0 <= x < BOARD_SIZE and 0 <= y < BOARD_SIZE):
+                    print(f"[ERROR] Coordinates out of range: ({x}, {y})")
+                    return
+            except (TypeError, ValueError) as e:
+                print(f"[ERROR] Invalid coordinate format: {e}")
+                return
+            
+            self.set_cell(x, y, sym)
+            self.last_move = (x, y)  # Lưu vị trí nước đi cuối cùng
             self.turn = None
             self.stop_countdown()
             self.disable_board()
+            self.draw_highlights()  # Vẽ highlight
             
             if t == 'opponent_move':
-                # Đối thủ vừa đi
-                self.set_status(f"{self.opponent} played ({x}, {y})")
-                self.append_chat(f'{self.opponent} played at ({x}, {y})\n', None)
+                self.set_status(f"⏸️ {self.opponent} played ({x}, {y})")
+                self.append_chat(f'🔵 {self.opponent} played at ({x}, {y})\n', "opponent")
             else:
-                # Nước của bạn đã được server xác nhận
-                self.append_chat(f'You played at ({x}, {y})\n', "you")
+                self.append_chat(f'✓ Move confirmed at ({x}, {y})\n', "you")
 
-        # ========================================
-        # HIGHLIGHT LINE THẮNG
-        # ========================================
         elif t == 'highlight':
-            cells = msg.get('cells', [])  # [(x1,y1), (x2,y2), ...]
+            cells = msg.get('cells', [])
             winner_name = msg.get('winner', '')
-            self.highlight_winning_line(cells)
+            
+            # Validate cells data
+            validated_cells = []
+            for cell in cells:
+                try:
+                    if isinstance(cell, (list, tuple)) and len(cell) == 2:
+                        cx, cy = int(cell[0]), int(cell[1])
+                        if 0 <= cx < BOARD_SIZE and 0 <= cy < BOARD_SIZE:
+                            validated_cells.append((cx, cy))
+                except (TypeError, ValueError):
+                    print(f"[ERROR] Invalid cell format: {cell}")
+            
+            if validated_cells:
+                self.highlight_winning_line(validated_cells)
             
             if winner_name == self.name:
-                self.set_status("You win!")
+                self.set_status("🏆 You win!")
             else:
-                self.set_status(f"{winner_name} wins!")
+                self.set_status(f"😢 {winner_name} wins!")
 
-        # ========================================
-        # TRẬN ĐẤU KẾT THÚC
-        # ========================================
         elif t == 'match_end':
-            result = msg.get('result')  # 'win' | 'lose' | 'draw'
-            reason = msg.get('reason', '')  # 'win' | 'timeout' | 'disconnect' | 'draw'
+            result = msg.get('result')
+            reason = msg.get('reason', '')
             
-            # Hiển thị kết quả với emoji dễ thương
+            # Emoji mapping
+            emoji_map = {
+                'win': '🎉',
+                'lose': '😢',
+                'draw': '🤝'
+            }
+            emoji = emoji_map.get(result, '📊')
+            
             if result == 'win':
-                msg_text = f"🎉 You won! ({reason})"
+                title = "🏆 VICTORY!"
+                msg_text = f"{emoji} You won!"
+                if reason == 'timeout':
+                    msg_text += " (opponent timeout)"
+                elif reason == 'disconnect':
+                    msg_text += " (opponent disconnected)"
                 self.append_chat(f'\n{msg_text}\n', "system")
-                messagebox.showinfo("Victory!", msg_text)
+                messagebox.showinfo(title, msg_text)
             elif result == 'lose':
-                msg_text = f"😢 You lost ({reason})"
+                title = "💔 DEFEAT"
+                msg_text = f"{emoji} You lost"
+                if reason == 'timeout':
+                    msg_text += " (timeout)"
+                elif reason == 'disconnect':
+                    msg_text += " (disconnected)"
                 self.append_chat(f'\n{msg_text}\n', "system")
-                messagebox.showinfo("Defeat", msg_text)
+                messagebox.showinfo(title, msg_text)
             elif result == 'draw':
-                msg_text = "🤝 Draw!"
+                msg_text = f"{emoji} It's a draw!"
                 self.append_chat(f'\n{msg_text}\n', "system")
                 messagebox.showinfo("Draw", msg_text)
             
@@ -838,76 +801,103 @@ class GuiClient:
             self.in_match = False
             self.highlighted = []
             self.set_status('Match ended')
+            
+            # Re-enable challenge button
+            self.challenge_btn['state'] = 'normal'
 
-        # ========================================
-        # NHẬN TIN NHẮN CHAT
-        # ========================================
         elif t == 'chat':
             sender = msg.get('from')
-            text = msg.get('text')
-            self.append_chat(f'{sender}: {text}\n', None)
+            text = msg.get('text', '')
+            if sender and text:
+                # Sanitize text
+                text = text.strip()[:500]
+                tag = "opponent" if sender == self.opponent else None
+                self.append_chat(f'{sender}: {text}\n', tag)
 
-        # ========================================
-        # LỖI TỪ SERVER
-        # ========================================
         elif t == 'error':
             error_msg = msg.get('msg', 'Unknown error')
-            self.append_chat(f'Error: {error_msg}\n', "system")
+            self.append_chat(f'⚠️ Error: {error_msg}\n', "system")
             
-            # Chỉ hiện popup cho lỗi quan trọng (login, name...)
-            if 'name' in error_msg.lower() or 'login' in error_msg.lower():
+            # Hiện popup cho lỗi quan trọng
+            critical_keywords = ['name', 'login', 'match', 'connection']
+            if any(keyword in error_msg.lower() for keyword in critical_keywords):
                 messagebox.showerror('Error', error_msg)
             
-            # Re-enable challenge button nếu không trong trận
+            # Re-enable buttons nếu không trong trận
             if not self.in_match:
                 self.challenge_btn['state'] = 'normal'
+            
+            # Re-enable board nếu lỗi không nghiêm trọng và đến lượt mình
+            if self.in_match and self.you == self.turn and 'occupied' in error_msg.lower():
+                self.enable_board()
 
     def update_users(self, users):
-        """
-        Cập nhật danh sách người online
-        Giữ nguyên selection nếu có thể (UX tốt hơn)
-        """
-        # Lưu lại người đang được chọn
+        """Cập nhật danh sách người online"""
+        # Lưu lại selection
         current_selection = None
         if self.users_listbox.curselection():
-            current_selection = self.users_listbox.get(self.users_listbox.curselection()[0])
+            try:
+                current_selection = self.users_listbox.get(self.users_listbox.curselection()[0])
+            except:
+                pass
         
-        # Xóa list cũ
+        # Clear và rebuild
         self.users_listbox.delete(0, tk.END)
         new_index = None
         
-        # Thêm lại từng user
         for i, u in enumerate(users):
-            self.users_listbox.insert(tk.END, u)
-            # Tìm index của user đã chọn trước đó
+            display_text = u
+            # Highlight tên mình
+            if u == self.name:
+                display_text = f"{u} (You)"
+            # Highlight opponent nếu đang đấu
+            elif u == self.opponent:
+                display_text = f"{u} ⚔️"
+            
+            self.users_listbox.insert(tk.END, u)  # Insert tên gốc để dễ xử lý
+            
             if u == current_selection:
                 new_index = i
         
         # Restore selection
         if new_index is not None:
             self.users_listbox.selection_set(new_index)
+            self.users_listbox.see(new_index)
 
 
 def main():
     """
-    ENTRY POINT - Điểm khởi đầu của chương trình
+    ENTRY POINT
     """
     root = tk.Tk()
     app = GuiClient(root)
     
     def on_closing():
-        """
-        Xử lý khi người dùng đóng cửa sổ (click X)
-        Hỏi xác nhận -> disconnect -> đóng app
-        """
-        if messagebox.askokcancel("Quit", "Do you want to quit?"):
-            app.on_disconnect()  # Disconnect khỏi server
-            root.after(500, root.destroy)  # Đợi 0.5s rồi đóng
+        """Xử lý khi đóng cửa sổ"""
+        if app.in_match:
+            if not messagebox.askokcancel("Quit", 
+                                         "⚠️ You are in a match!\n\nQuitting will result in a loss.\n\nAre you sure?"):
+                return
+        elif app.writer:
+            if not messagebox.askokcancel("Quit", "Disconnect and quit?"):
+                return
+        
+        app.on_disconnect()
+        root.after(300, root.destroy)
     
-    # Bind sự kiện đóng cửa sổ
     root.protocol("WM_DELETE_WINDOW", on_closing)
     
-    # Khởi động UI loop (blocking call)
+    # Set minimum window size
+    root.minsize(900, 600)
+    
+    # Center window on screen
+    root.update_idletasks()
+    width = root.winfo_width()
+    height = root.winfo_height()
+    x = (root.winfo_screenwidth() // 2) - (width // 2)
+    y = (root.winfo_screenheight() // 2) - (height // 2)
+    root.geometry(f'{width}x{height}+{x}+{y}')
+    
     root.mainloop()
 
 
