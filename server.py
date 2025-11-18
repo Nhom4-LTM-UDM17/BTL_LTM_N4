@@ -2,10 +2,12 @@ import asyncio
 import sqlite3
 import json
 import time
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 import socket
 from typing import Dict, Optional, List
+from collections import deque
 
 from common import BOARD_SIZE, THINK_TIME_SECONDS, send_json, recv_json, find_win_line
 
@@ -13,7 +15,9 @@ from common import BOARD_SIZE, THINK_TIME_SECONDS, send_json, recv_json, find_wi
 # CÁC HẰNG SỐ - Kiểu như settings của game
 # ============================================
 HIGHLIGHT_DELAY = 3.0  # Đợi 3 giây để người chơi ngắm line thắng trước khi kết thúc
-DEBOUNCE_TIME = 0.05   # Chống spam khi resize - như nút "nhấn giữ" trong game
+RATE_LIMIT_REQUESTS = 20  # Tối đa 20 requests
+RATE_LIMIT_WINDOW = 2.0   # Trong 2 giây (chống spam/DoS)
+BROADCAST_DEBOUNCE = 0.1  # Debounce 100ms cho broadcast user list
 
 # ============================================
 # DATACLASS - Cấu trúc dữ liệu dễ hiểu
@@ -26,11 +30,13 @@ class Client:
     - name: tên hiển thị
     - reader/writer: ống dẫn để gửi/nhận tin nhắn
     - in_match: đang ở trận nào? (None = đang rảnh)
+    - request_times: lịch sử request để rate limiting
     """
     name: str
     reader: asyncio.StreamReader
     writer: asyncio.StreamWriter
     in_match: Optional[str] = None
+    request_times: deque = field(default_factory=lambda: deque(maxlen=RATE_LIMIT_REQUESTS))
 
 @dataclass
 class Match:
@@ -43,6 +49,7 @@ class Match:
     - moves: lịch sử các nước đi (để lưu database sau)
     - deadline: hết giờ lúc nào?
     - timer_task: cái đồng hồ đếm ngược đang chạy
+    - is_finishing: flag để tránh race condition khi finish_match được gọi nhiều lần
     """
     id: str
     player_x: str
@@ -53,6 +60,7 @@ class Match:
     moves: List[Dict] = field(default_factory=list)
     deadline: Optional[float] = None
     timer_task: Optional[asyncio.Task] = None
+    is_finishing: bool = False  # Cờ để tránh race condition
 
 # ============================================
 # SERVER CHÍNH
@@ -62,7 +70,7 @@ class CaroServer:
     def __init__(self, host="0.0.0.0", port=7777, db_path="game_history.db"):
         """
         Khởi tạo server - như mở cửa hàng cờ
-        - Kết nối database để lưu lịch sử
+        - Kết nối database để lưu lịch sử (thread-safe với lock)
         - Tạo bảng matches nếu chưa có
         - Chuẩn bị 3 dictionary để quản lý:
           + clients: danh sách người online
@@ -72,34 +80,43 @@ class CaroServer:
         self.host = host
         self.port = port
         print(f"[INFO] Connecting to database: {db_path}")
-        self.db = sqlite3.connect(db_path, check_same_thread=False)
+        
+        # Kết nối database với thread safety
+        self.db = sqlite3.connect(db_path)
+        self.db_lock = threading.Lock()  # Lock để đảm bảo thread-safe
         print("[INFO] Database connected successfully")
         
         # Tạo bảng lưu lịch sử nếu chưa có
-        self.db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS matches (
-                id TEXT PRIMARY KEY,
-                player_x TEXT,
-                player_o TEXT,
-                winner TEXT,
-                started_at TEXT,
-                finished_at TEXT,
-                moves TEXT
+        with self.db_lock:
+            self.db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS matches (
+                    id TEXT PRIMARY KEY,
+                    player_x TEXT,
+                    player_o TEXT,
+                    winner TEXT,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    moves TEXT
+                )
+                """
             )
-            """
-        )
-        self.db.commit()
+            self.db.commit()
         
         # 3 bộ não của server
         self.clients: Dict[str, Client] = {}  # Ai đang online?
         self.matches: Dict[str, Match] = {}   # Trận nào đang đấu?
         self.pending_invites: Dict[tuple, bool] = {}  # Lời mời nào đang chờ?
+        
+        # Cache để tối ưu broadcast
+        self.last_user_list: List[str] = []
+        self.broadcast_task: Optional[asyncio.Task] = None
 
     def __del__(self):
         """Dọn dẹp khi tắt server - đóng database cho sạch"""
         if hasattr(self, 'db'):
-            self.db.close()
+            with self.db_lock:
+                self.db.close()
             print("[INFO] Database connection closed")
             
     def get_local_ip(self):
@@ -162,7 +179,7 @@ class CaroServer:
                 await writer.wait_closed()
                 return
             
-            # BƯỚC 2: Đăng ký thành công!
+            # BƯỚC 2: ĐĂNG KÝ THÀNH CÔNG!
             client_name = name
             self.clients[name] = Client(name, reader, writer)
             print(f"[INFO] {name} connected from {addr}")
@@ -191,8 +208,9 @@ class CaroServer:
                     match = self.matches.get(client.in_match)
                     if match:
                         # Tắt đồng hồ đếm ngược
-                        if match.timer_task:
+                        if match.timer_task and not match.timer_task.done():
                             match.timer_task.cancel()
+                            match.timer_task = None
                         
                         # Người còn lại tự động thắng
                         opponent_name = self.opponent_of(match, client_name)
@@ -222,31 +240,70 @@ class CaroServer:
         """
         Gửi danh sách người online cho TẤT CẢ mọi người
         Như kiểu cập nhật bảng xếp hạng real-time
+        
+        Tối ưu:
+        - Debounce: chỉ gửi 1 lần trong 100ms
+        - Chỉ gửi khi có thay đổi
+        - Gửi song song (gather) thay vì tuần tự
         """
-        users = list(self.clients.keys())
-        dead_clients = []  # Client bị lỗi kết nối
+        # Cancel broadcast task cũ nếu có
+        if self.broadcast_task and not self.broadcast_task.done():
+            self.broadcast_task.cancel()
         
-        for name, c in list(self.clients.items()):
+        async def _do_broadcast():
             try:
-                await send_json(c.writer, {"type": "user_list", "users": users})
+                # Debounce: đợi 100ms để gộp nhiều thay đổi
+                await asyncio.sleep(BROADCAST_DEBOUNCE)
+                
+                users = list(self.clients.keys())
+                
+                # Chỉ gửi khi có thay đổi
+                if users == self.last_user_list:
+                    return
+                
+                self.last_user_list = users.copy()
+                
+                # Gửi song song cho tất cả client (nhanh hơn vòng for)
+                tasks = []
+                for c in self.clients.values():
+                    tasks.append(send_json(c.writer, {"type": "user_list", "users": users}))
+                
+                # Chờ tất cả gửi xong, bỏ qua lỗi
+                await asyncio.gather(*tasks, return_exceptions=True)
+                
+            except asyncio.CancelledError:
+                pass
             except Exception as e:
-                print(f"[ERROR] Failed to send user list to {name}: {e}")
-                dead_clients.append(name)
+                print(f"[ERROR] Broadcast error: {e}")
         
-        # Dọn dẹp client chết
-        for name in dead_clients:
-            if name in self.clients:
-                del self.clients[name]
+        self.broadcast_task = asyncio.create_task(_do_broadcast())
 
     async def client_loop(self, client: Client):
         """
         Vòng lặp chính - đợi và xử lý lệnh từ client
         Như receptionist nghe điện thoại và điều phối
+        
+        Bổ sung: Rate limiting để chống DoS attack
         """
         reader, writer = client.reader, client.writer
         
         while True:
             msg = await recv_json(reader)
+            
+            # RATE LIMITING: Chống spam/DoS
+            now = time.time()
+            client.request_times.append(now)
+            
+            # Nếu gửi quá 20 request trong 2 giây → từ chối
+            if len(client.request_times) >= RATE_LIMIT_REQUESTS:
+                if now - client.request_times[0] < RATE_LIMIT_WINDOW:
+                    await send_json(writer, {
+                        "type": "error", 
+                        "msg": "Rate limit exceeded. Please slow down."
+                    })
+                    await asyncio.sleep(1.0)  # Phạt đợi 1 giây
+                    continue
+            
             t = msg.get("type")
             
             # Xử lý từng loại lệnh
@@ -355,10 +412,7 @@ class CaroServer:
         # Hủy timer cũ nếu có (phòng trường hợp bug)
         if m.timer_task and not m.timer_task.done():
             m.timer_task.cancel()
-            try:
-                await m.timer_task
-            except asyncio.CancelledError:
-                pass
+            m.timer_task = None
         
         # Tìm người đang đến lượt
         cur_name = m.player_x if m.turn == "X" else m.player_o
@@ -366,7 +420,7 @@ class CaroServer:
         if not cur_client:
             return
         
-        # Tính deadline = giờ hiện tại + 30 giây (ví dụ)
+        # Tính deadline = giờ hiện tại + 30 giây
         m.deadline = time.time() + THINK_TIME_SECONDS
         
         # Thông báo: "Đến lượt bạn, hết giờ lúc..."
@@ -390,10 +444,11 @@ class CaroServer:
                 
                 current_match = self.matches[m.id]
                 
-                # Kiểm tra đúng người, đúng lượt
+                # Kiểm tra đúng người, đúng lượt (tránh race condition)
                 if (current_match.deadline and 
                     abs(current_match.deadline - m.deadline) < 0.1 and
-                    current_match.turn == m.turn):
+                    current_match.turn == m.turn and
+                    not current_match.is_finishing):
                     
                     # HẾT GIỜ! Đối thủ thắng
                     print(f"[INFO] Timeout: {m.turn} in match {m.id}")
@@ -416,6 +471,8 @@ class CaroServer:
         """
         Xử lý nước đi: Client đánh vào ô (x, y)
         Flow: Validate -> Cập nhật board -> Check win -> Chuyển lượt
+        
+        Cải tiến: Validate input nghiêm ngặt để tránh crash
         """
         # Kiểm tra đang trong trận không
         match_id = client.in_match
@@ -429,10 +486,17 @@ class CaroServer:
         if symbol != m.turn:
             return await send_json(client.writer, {"type": "error", "msg": "Not your turn"})
         
-        # Tọa độ hợp lệ không?
-        x, y = msg.get("x"), msg.get("y")
-        if not isinstance(x, int) or not isinstance(y, int) or not (0 <= x < BOARD_SIZE and 0 <= y < BOARD_SIZE):
-            return await send_json(client.writer, {"type": "error", "msg": "Invalid coordinates"})
+        # VALIDATE INPUT NGHIÊM NGẶT (chống malicious client)
+        try:
+            x = int(msg.get("x"))
+            y = int(msg.get("y"))
+            if not (0 <= x < BOARD_SIZE and 0 <= y < BOARD_SIZE):
+                raise ValueError("Out of range")
+        except (TypeError, ValueError) as e:
+            return await send_json(client.writer, {
+                "type": "error", 
+                "msg": f"Invalid coordinates: {e}"
+            })
         
         # Ô đó trống không?
         if m.board[y][x] != ".":
@@ -441,10 +505,6 @@ class CaroServer:
         # HỦY TIMER - đã đi rồi!
         if m.timer_task and not m.timer_task.done():
             m.timer_task.cancel()
-            try:
-                await m.timer_task
-            except asyncio.CancelledError:
-                pass
             m.timer_task = None
         
         # CẬP NHẬT BÀN CỜ
@@ -496,7 +556,7 @@ class CaroServer:
         m = self.matches[match_id]
         symbol = "X" if client.name == m.player_x else "O"
         
-        if symbol == m.turn:
+        if symbol == m.turn and not m.is_finishing:
             # Đúng là lượt của họ -> đối thủ thắng
             opponent_name = self.opponent_of(m, client.name)
             print(f"[INFO] {client.name} self-reported timeout")
@@ -506,14 +566,18 @@ class CaroServer:
         """
         KẾT THÚC TRẬN ĐẤU
         Gửi thông báo -> Lưu database -> Dọn dẹp
+        
+        Cải tiến: Dùng flag is_finishing để tránh race condition
         """
+        # CRITICAL: Tránh race condition - chỉ cho phép finish 1 lần
+        if m.is_finishing:
+            return
+        m.is_finishing = True
+        
         # Tắt timer
         if m.timer_task and not m.timer_task.done():
             m.timer_task.cancel()
-            try:
-                await m.timer_task
-            except asyncio.CancelledError:
-                pass
+            m.timer_task = None
         
         print(f"[INFO] Match finished: {m.id} - Winner: {winner or 'draw'} ({reason})")
         
@@ -554,7 +618,7 @@ class CaroServer:
             # Đánh dấu không còn trong trận
             c.in_match = None
         
-        # Lưu vào database
+        # Lưu vào database (thread-safe)
         self.save_history(m, winner)
         
         # Xóa trận khỏi bộ nhớ
@@ -562,21 +626,26 @@ class CaroServer:
             del self.matches[m.id]
 
     def save_history(self, m: Match, winner: Optional[str]):
-        """Lưu lịch sử trận đấu vào SQLite"""
+        """
+        Lưu lịch sử trận đấu vào SQLite
+        
+        Cải tiến: Dùng lock để đảm bảo thread-safe
+        """
         try:
-            self.db.execute(
-                "INSERT OR REPLACE INTO matches (id, player_x, player_o, winner, started_at, finished_at, moves) VALUES (?,?,?,?,?,?,?)",
-                (
-                    m.id,
-                    m.player_x,
-                    m.player_o,
-                    winner or "draw",
-                    datetime.fromtimestamp(m.started_at).isoformat(timespec="seconds"),
-                    datetime.now().isoformat(timespec="seconds"),
-                    json.dumps(m.moves, ensure_ascii=False),
-                ),
-            )
-            self.db.commit()
+            with self.db_lock:  # Thread-safe database access
+                self.db.execute(
+                    "INSERT OR REPLACE INTO matches (id, player_x, player_o, winner, started_at, finished_at, moves) VALUES (?,?,?,?,?,?,?)",
+                    (
+                        m.id,
+                        m.player_x,
+                        m.player_o,
+                        winner or "draw",
+                        datetime.fromtimestamp(m.started_at).isoformat(timespec="seconds"),
+                        datetime.now().isoformat(timespec="seconds"),
+                        json.dumps(m.moves, ensure_ascii=False),
+                    ),
+                )
+                self.db.commit()
             print(f"[INFO] Match saved: {m.id}")
         except Exception as e:
             print(f"[ERROR] Failed to save match history: {e}")
