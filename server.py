@@ -82,7 +82,7 @@ class CaroServer:
         print(f"[INFO] Connecting to database: {db_path}")
         
         # Kết nối database với thread safety
-        self.db = sqlite3.connect(db_path)
+        self.db = sqlite3.connect(db_path, check_same_thread=False)
         self.db_lock = threading.Lock()  # Lock để đảm bảo thread-safe
         print("[INFO] Database connected successfully")
         
