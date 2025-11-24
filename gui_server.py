@@ -44,7 +44,7 @@ class GuiServer:
         # Label cố định "Port:"
         tk.Label(top, text="Port:", font=("Arial", 10)).pack(side="left", padx=(10, 2))
         
-        # 💡 FIX: Tạo StringVar và Entry để nhập Port
+        #  Tạo StringVar và Entry để nhập Port
         self.port_var = tk.StringVar(value=str('7777')) # Gán giá trị mặc định
         
         self.entry_port = tk.Entry(

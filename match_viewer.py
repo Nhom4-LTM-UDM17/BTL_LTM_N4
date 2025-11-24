@@ -1,5 +1,7 @@
 import tkinter as tk
 from gui_client import BOARD_SIZE
+from common import find_win_line
+
 
 class MatchViewer:
     def __init__(self, root, server, match_id):
@@ -10,6 +12,7 @@ class MatchViewer:
         self.root.title(f"Watching Match {match_id}")
         self.root.geometry("700x780")
         self.root.config(bg="#1e1e2f")
+        self.last_move = None
 
         # ====================================================
         # HEADER - HIỂN THỊ TÊN NGƯỜI CHƠI + LƯỢT HIỆN TẠI
@@ -68,7 +71,6 @@ class MatchViewer:
     # ====================================================
     def refresh(self):
         if self.match_id not in self.server.matches:
-            self.root.destroy()
             return
 
         m = self.server.matches[self.match_id]
@@ -89,11 +91,42 @@ class MatchViewer:
                 val = m.board[y][x]
                 self.board_state[y][x] = "" if val == "." else val
 
-        # ==== Highlight winning cells if exist ====
-        self.highlighted = getattr(m, "win_cells", [])
+        # ==== Lấy nước đi cuối ====
+        if m.moves:
+            self.last_move = (m.moves[-1]["x"], m.moves[-1]["y"])
+        else:
+            self.last_move = None
 
+        # ==================================================================
+        #  TÌM NGƯỜI THẮNG TỰ ĐỘNG DỰA TRÊN find_win_line()
+        # ==================================================================
+        self.highlighted = []
+
+        # Quét toàn bộ bàn cờ tìm đường thắng
+        for y in range(BOARD_SIZE):
+            for x in range(BOARD_SIZE):
+                symbol = self.board_state[y][x]
+                if symbol in ("X", "O"):
+                    line = find_win_line(self.board_state, x, y, symbol)
+                    if len(line) >= 5:
+                        self.highlighted = line
+                        break
+            if self.highlighted:
+                break
+        
+        # ==================================================================
+        #  Nếu chưa thắng, highlight last move thôi
+        # ==================================================================
+        if not self.highlighted and self.last_move:
+            lx, ly = self.last_move
+            symbol = self.board_state[ly][lx]
+            if symbol:
+                self.highlighted = find_win_line(self.board_state, lx, ly, symbol)
+
+        # Draw
         self.redraw()
         self.root.after(250, self.refresh)
+        
 
     # ====================================================
     # DRAWING (same logic as client)
@@ -169,13 +202,25 @@ class MatchViewer:
         ox = self.offset_x
         oy = self.offset_y
 
-        for (x, y) in self.highlighted:
+        # Nếu có winner → chỉ highlight win_cells (màu vàng)
+        if self.highlighted:
+            for (x, y) in self.highlighted:
+                x1 = ox + x * cs
+                y1 = oy + y * cs
+                x2 = x1 + cs
+                y2 = y1 + cs
+
+                self.canvas.create_rectangle(
+                    x1, y1, x2, y2,
+                    outline="#FFD700", width=3
+                )
+            return 
+            
+        # Highlight last move
+        if self.last_move:
+            x, y = self.last_move
             x1 = ox + x * cs
             y1 = oy + y * cs
             x2 = x1 + cs
             y2 = y1 + cs
-
-            self.canvas.create_rectangle(
-                x1, y1, x2, y2,
-                outline="#FFD700", width=3
-            )
+            self.canvas.create_rectangle(x1, y1, x2, y2, outline="#00FF00", width=3)
