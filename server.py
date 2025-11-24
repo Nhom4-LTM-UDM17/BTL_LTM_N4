@@ -111,6 +111,7 @@ class CaroServer:
         # Cache để tối ưu broadcast
         self.last_user_list: List[str] = []
         self.broadcast_task: Optional[asyncio.Task] = None
+        self.loop: Optional[asyncio.AbstractEventLoop] = None
 
     def __del__(self):
         """Dọn dẹp khi tắt server - đóng database cho sạch"""
@@ -137,14 +138,15 @@ class CaroServer:
         Khởi động server - mở cửa đón khách
         Lắng nghe ở port 7777, mỗi người vào sẽ gọi handle_client
         """
-        server = await asyncio.start_server(self.handle_client, self.host, self.port)
+        self.loop = asyncio.get_event_loop()
+        self.server = await asyncio.start_server(self.handle_client, self.host, self.port)
         
         # Lấy IP thật của máy để hiển thị
         local_ip = self.get_local_ip()
         print(f"[INFO] Server listening on {self.host}:{self.port}")
         print(f"[INFO] LAN IP address: {local_ip}:{self.port}")
-        async with server:
-            await server.serve_forever()
+        async with self.server:
+            await self.server.serve_forever()
 
     async def handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         """
@@ -664,6 +666,41 @@ class CaroServer:
             except Exception as e:
                 print(f"[ERROR] Failed to relay chat: {e}")
 
+    async def stop(self):
+        """
+        Ngừng server, ngắt kết nối tất cả client và dọn dẹp trạng thái.
+        Đây là phương thức async, sẽ được gọi từ thread chính của GUI.
+        """
+        print("[INFO] Shutting down server and forcing client disconnects...")
+        
+        # 1. Đóng server listener (ngừng chấp nhận client mới)
+        if self.server:
+            self.server.close()
+            await self.server.wait_closed()
+            self.server = None
+
+        # 2. Đóng tất cả client connections
+        tasks = []
+        # Dùng list() để duyệt an toàn vì self.clients có thể bị thay đổi nếu client tự disconnect
+        for name, client in list(self.clients.items()): 
+            if client.writer and not client.writer.is_closing():
+                try:
+                    client.writer.close()
+                    tasks.append(client.writer.wait_closed())
+                except Exception as e:
+                    print(f"[WARN] Error closing writer for {name}: {e}")
+        
+        # Chờ tất cả writer đóng (bỏ qua lỗi)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+            
+        # 3. Dọn dẹp trạng thái
+        self.clients.clear()
+        self.matches.clear()
+        self.pending_invites.clear()
+        
+        print("[INFO] Server fully stopped. All clients disconnected.")
+        
 if __name__ == "__main__":
     try:
         asyncio.run(CaroServer().start())
