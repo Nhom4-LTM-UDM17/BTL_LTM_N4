@@ -136,7 +136,7 @@ class CaroServer:
     async def start(self):
         """
         Khởi động server - mở cửa đón khách
-        Lắng nghe ở port 7777, mỗi người vào sẽ gọi handle_client
+        Lắng nghe ở port 7777 (mặc định) hoặc port do người dùng nhập, mỗi người vào sẽ gọi handle_client
         """
         self.loop = asyncio.get_event_loop()
         self.server = await asyncio.start_server(self.handle_client, self.host, self.port)

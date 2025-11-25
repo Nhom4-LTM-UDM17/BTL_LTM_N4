@@ -5,14 +5,14 @@ from common import find_win_line
 
 class MatchViewer:
     def __init__(self, root, server, match_id):
-        self.root = root
-        self.server = server
-        self.match_id = match_id
+        self.root = root            # Cửa sổ gốc Tkinter
+        self.server = server        # Server để lấy dữ liệu trận
+        self.match_id = match_id    # ID trận đang xem
 
         self.root.title(f"Watching Match {match_id}")
         self.root.geometry("700x780")
         self.root.config(bg="#1e1e2f")
-        self.last_move = None
+        self.last_move = None           # Lưu nước đi cuối
 
         # ====================================================
         # HEADER - HIỂN THỊ TÊN NGƯỜI CHƠI + LƯỢT HIỆN TẠI
@@ -61,19 +61,20 @@ class MatchViewer:
         self.offset_x = 0
         self.offset_y = 0
         self.board_state = [["" for _ in range(BOARD_SIZE)] for _ in range(BOARD_SIZE)]
-        self.highlighted = []
+        self.highlighted = []       # Danh sách ô được highlight
 
-        # Start update loop
+       # Bắt đầu vòng lặp refresh tự động
         self.refresh()
 
     # ====================================================
     # AUTO REFRESH EACH 250ms
     # ====================================================
     def refresh(self):
+        # Nếu trận đã kết thúc hoặc bị xóa
         if self.match_id not in self.server.matches:
-            return
+            return 
 
-        m = self.server.matches[self.match_id]
+        m = self.server.matches[self.match_id]      # Lấy object trận từ server
 
         # ==== Update players ====
         self.label_players.config(
@@ -100,7 +101,7 @@ class MatchViewer:
         # ==================================================================
         #  TÌM NGƯỜI THẮNG TỰ ĐỘNG DỰA TRÊN find_win_line()
         # ==================================================================
-        self.highlighted = []
+        self.highlighted = [] 
 
         # Quét toàn bộ bàn cờ tìm đường thắng
         for y in range(BOARD_SIZE):
@@ -123,13 +124,15 @@ class MatchViewer:
             if symbol:
                 self.highlighted = find_win_line(self.board_state, lx, ly, symbol)
 
-        # Draw
+        # Vẽ lại toàn bộ
         self.redraw()
+        
+        # Gọi lại refresh sau 250ms
         self.root.after(250, self.refresh)
         
 
     # ====================================================
-    # DRAWING (same logic as client)
+    # VẼ LẠI BÀN CỜ KHI THAY ĐỔI KÍCH THƯỚC
     # ====================================================
     def on_resize(self, evt=None):
         w = self.canvas.winfo_width()
@@ -148,26 +151,34 @@ class MatchViewer:
 
         self.redraw()
 
+
+    # ========================================================================
+    # REDRAW = Xóa + vẽ lại bàn cờ
+    # ========================================================================
     def redraw(self):
         if self.cell_size <= 0:
             return
 
-        self.canvas.delete("all")
+        self.canvas.delete("all")       # Xóa toàn bộ
 
         # Grid
         for i in range(BOARD_SIZE + 1):
             x = self.offset_x + i * self.cell_size
             y = self.offset_y + i * self.cell_size
+            
+            # Đường dọc
             self.canvas.create_line(
                 x, self.offset_y, x, self.offset_y + self.cell_size * BOARD_SIZE,
                 fill="#3a3a50"
             )
+            
+            # Đường ngang
             self.canvas.create_line(
                 self.offset_x, y, self.offset_x + self.cell_size * BOARD_SIZE, y,
                 fill="#3a3a50"
             )
 
-        # Pieces
+        # ====================== VẼ QUÂN X/O =======================
         for y in range(BOARD_SIZE):
             for x in range(BOARD_SIZE):
                 s = self.board_state[y][x]
@@ -178,25 +189,37 @@ class MatchViewer:
         # Highlight
         self.draw_highlights()
 
+
+    # ========================================================================
+    # VẼ QUÂN CỜ (HÌNH TRÒN + CHỮ X/O)
+    # ========================================================================
     def draw_piece(self, x, y, symbol, color):
         cs = self.cell_size
         ox = self.offset_x
         oy = self.offset_y
 
+        # Tọa độ tâm ô
         cx = ox + x * cs + cs // 2
         cy = oy + y * cs + cs // 2
 
-        r = int(cs * 0.35)
+        r = int(cs * 0.35)      # Bán kính quân cờ
 
+        # Vẽ hình tròn
         self.canvas.create_oval(
             cx - r, cy - r, cx + r, cy + r,
             fill=color, outline=""
         )
+        
+        # Vẽ chữ X/O
         self.canvas.create_text(
             cx, cy, text=symbol, fill="white",
             font=("Consolas", int(cs * 0.4), "bold")
         )
 
+    
+    # ========================================================================
+    # VẼ Ô HIGHLIGHT (ĐƯỜNG THẮNG hoặc LAST_MOVE)
+    # ========================================================================
     def draw_highlights(self):
         cs = self.cell_size
         ox = self.offset_x
