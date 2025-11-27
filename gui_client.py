@@ -6,7 +6,7 @@ from tkinter import messagebox, scrolledtext
 from queue import Queue, Empty
 import time
 
-HOST = "192.168.0.148"
+HOST = "192.168.0.125"
 PORT = 7777
 BOARD_SIZE = 15
 
@@ -228,7 +228,7 @@ class GuiClient:
         # Vẽ lại các quân cờ
         self.redraw_board_from_state()
 
-    def draw_3d_cell(self, x, y, base_color="#2b2b3c", symbol='', text_color="#FFFFFF"):
+    def draw_3d_cell(self, x, y, base_color="#2b2c3c", symbol='', text_color="#FFFFFF"):
         """Vẽ 1 ô với hiệu ứng 3D"""
         if self.cell_size < 10:
             return
@@ -590,43 +590,66 @@ class GuiClient:
     # =====================================
     
     def start_countdown(self, deadline):
-        """Bắt đầu đếm ngược"""
-        if not deadline:
+        """Bắt đầu đếm ngược
+        
+        Args:
+            deadline: Unix timestamp khi hết giờ (từ server)
+        """
+        if not deadline or deadline <= 0:
             return
-        self.deadline = time.time() + deadline
+        
+        # 🔴 QUAN TRỌNG: Dừng timer cũ
+        self.stop_countdown()
+        
+        # Lưu deadline tuyệt đối từ server (không cộng thêm)
+        self.deadline = deadline
+        self.timer_label.config(fg="#00FFAA")
         self.update_timer()
 
     def update_timer(self):
         """Cập nhật timer mỗi giây"""
         if not self.deadline:
             self.timer_var.set('')
+            self.timer_id = None
             return
 
+        # 🔴 QUAN TRỌNG: Tính remaining dựa vào deadline tuyệt đối
         remaining = int(self.deadline - time.time())
+        
         if remaining > 0:
+            # Chọn màu dựa vào thời gian còn lại
             if remaining <= 5:
-                self.timer_label.config(fg="#FF3B30")
+                self.timer_label.config(fg="#FF3B30")  # Red
             elif remaining <= 10:
-                self.timer_label.config(fg="#FFA500")
+                self.timer_label.config(fg="#FFA500")  # Orange
             else:
-                self.timer_label.config(fg="#00FFAA")
+                self.timer_label.config(fg="#00FFAA")  # Green
             
             self.timer_var.set(f"⏱ {remaining}s")
+            # Schedule update tiếp theo
             self.timer_id = self.root.after(1000, self.update_timer)
         else:
+            # Hết giờ
             self.timer_var.set("⏱ Time's up!")
             self.timer_label.config(fg="#FF3B30")
-            self.stop_countdown()
             self.append_chat("⚠️ Your time expired!\n", "system")
             self.send_json({'type': 'timeout'})
+            
+            # Reset state
+            self.deadline = None
+            self.timer_id = None
 
     def stop_countdown(self):
         """Dừng timer"""
-        if self.timer_id:
-            self.root.after_cancel(self.timer_id)
-            self.timer_id = None
+        if self.timer_id is not None:
+            try:
+                self.root.after_cancel(self.timer_id)
+            except tk.TclError:
+                pass
+        
         self.timer_var.set('')
         self.deadline = None
+        self.timer_id = None
         self.timer_label.config(fg="#00FFAA")
 
     # =====================================
@@ -699,9 +722,13 @@ class GuiClient:
 
         elif t == 'your_turn':
             self.turn = self.you
+    
+            # 🔴 QUAN TRỌNG: deadline từ server phải là Unix timestamp
+            # Server nên gửi: {'type': 'your_turn', 'deadline': time.time() + 30}
             deadline = msg.get('deadline')
             if deadline:
                 self.start_countdown(deadline)
+    
             self.enable_board()
             self.set_status(f"🎯 Your turn! ({self.you})")
             self.append_chat('▶️ Your turn!\n', "system")
