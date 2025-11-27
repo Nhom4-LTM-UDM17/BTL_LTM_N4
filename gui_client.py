@@ -6,7 +6,7 @@ from tkinter import messagebox, scrolledtext
 from queue import Queue, Empty
 import time
 
-HOST = "192.168.0.148"
+HOST = "127.0.0.1"
 PORT = 7777
 BOARD_SIZE = 15
 
@@ -590,35 +590,36 @@ class GuiClient:
     # =====================================
     
     def start_countdown(self, deadline):
-        """Bắt đầu đếm ngược"""
         if not deadline:
             return
-        self.deadline = time.time() + deadline
-        self.update_timer()
+
+        self.seconds_left = int(deadline)   
+        self.timer_var.set(f"⏱ {self.seconds_left}s")
+
+        if self.timer_id:
+            self.root.after_cancel(self.timer_id)
+
+        self.timer_id = self.root.after(1000, self.update_timer)    
 
     def update_timer(self):
-        """Cập nhật timer mỗi giây"""
-        if not self.deadline:
-            self.timer_var.set('')
-            return
+        self.seconds_left -= 1
 
-        remaining = int(self.deadline - time.time())
-        if remaining > 0:
-            if remaining <= 5:
+        if self.seconds_left > 0:
+            if self.seconds_left <= 5:
                 self.timer_label.config(fg="#FF3B30")
-            elif remaining <= 10:
+            elif self.seconds_left <= 10:
                 self.timer_label.config(fg="#FFA500")
             else:
                 self.timer_label.config(fg="#00FFAA")
-            
-            self.timer_var.set(f"⏱ {remaining}s")
+
+            self.timer_var.set(f"⏱ {self.seconds_left}s")
             self.timer_id = self.root.after(1000, self.update_timer)
         else:
             self.timer_var.set("⏱ Time's up!")
             self.timer_label.config(fg="#FF3B30")
             self.stop_countdown()
-            self.append_chat("⚠️ Your time expired!\n", "system")
             self.send_json({'type': 'timeout'})
+            self.append_chat("⚠️ Your time expired!\n", "system")    
 
     def stop_countdown(self):
         """Dừng timer"""
