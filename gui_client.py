@@ -6,7 +6,7 @@ from tkinter import messagebox, scrolledtext
 from queue import Queue, Empty
 import time
 
-HOST = "127.0.0.1"
+HOST = "192.168.0.148"
 PORT = 7777
 BOARD_SIZE = 15
 
@@ -593,7 +593,7 @@ class GuiClient:
         """Bắt đầu đếm ngược"""
         if not deadline:
             return
-        self.deadline = deadline
+        self.deadline = time.time() + deadline
         self.update_timer()
 
     def update_timer(self):
