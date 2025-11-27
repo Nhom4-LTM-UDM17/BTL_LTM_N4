@@ -429,7 +429,7 @@ class CaroServer:
         try:
             await send_json(cur_client.writer, {
                 "type": "your_turn",
-                "deadline": THINK_TIME_SECONDS
+                "deadline": m.deadline
             })
         except Exception as e:
             print(f"[ERROR] Failed to send your_turn to {cur_name}: {e}")
